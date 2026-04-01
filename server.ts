@@ -880,6 +880,11 @@ async function startServer() {
         pickup.completionPhoto = completionPhoto;
         pickup.completedAt = new Date();
         pickup.deliveryCharge = finalCharge;
+        // Sync completion photo into deliveryProofImages for fraud detection visibility
+        if (!pickup.deliveryProofImages) pickup.deliveryProofImages = [];
+        if (!pickup.deliveryProofImages.includes(completionPhoto)) {
+          pickup.deliveryProofImages = [completionPhoto];
+        }
         await pickup.save();
 
         // Update collector earnings
@@ -1172,9 +1177,32 @@ async function startServer() {
     try {
       const logs = await FraudLog.find()
         .populate('collectorId', 'name email')
-        .populate('pickupId', 'actualWeight estimatedWeight wasteType location createdAt completedAt')
+        .populate('pickupId')
+        .lean()
         .sort({ createdAt: -1 });
       res.json(logs);
+    } catch (error: any) {
+      res.status(500).json({ message: 'Failed to fetch fraud logs' });
+    }
+  });
+
+  // Collector uploads delivery proof images for a pickup
+  app.post("/api/pickups/:pickupId/upload-proof", authenticateToken, authorizeRole(['collector']), async (req: any, res) => {
+    try {
+      const { imageUrl } = req.body;
+      if (!imageUrl) return res.status(400).json({ message: 'imageUrl is required' });
+      
+      const pickup = await Pickup.findById(req.params.pickupId);
+      if (!pickup) return res.status(404).json({ message: 'Pickup not found' });
+      if (pickup.collectorId.toString() !== req.user.id) {
+        return res.status(403).json({ message: 'You can only upload proof for your own deliveries' });
+      }
+      
+      if (!pickup.deliveryProofImages) pickup.deliveryProofImages = [];
+      pickup.deliveryProofImages.push(imageUrl);
+      await pickup.save();
+      
+      res.json({ message: 'Delivery proof uploaded successfully', images: pickup.deliveryProofImages });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
@@ -1565,35 +1593,54 @@ async function startServer() {
       if (!Array.isArray(messages) || messages.length === 0) {
         return res.status(400).json({ message: 'messages array is required' });
       }
-      const openai = new OpenAI({
-        apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY || 'placeholder',
-        baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+      
+      const apiKey = process.env.OPENROUTER_API || process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
+      if (!apiKey || apiKey === 'placeholder') {
+        return res.status(503).json({ message: 'Chatbot is not configured. Please set OPENROUTER_API in environment secrets.' });
+      }
+
+      const aiClient = new OpenAI({
+        baseURL: 'https://openrouter.ai/api/v1',
+        apiKey,
       });
+
       const systemPrompt = `You are GreenLoop's friendly AI assistant. GreenLoop is a sustainable waste management platform in Bangladesh (currency: ৳ BDT) that connects households, waste collectors, and recycling centers in a unified green economy.
 
 Key features you can help with:
-- Waste pickup scheduling: users submit pickups with GPS location sharing + interactive map; delivery charge = ৳60 base (min) + ৳20/km after 3km + ৳5/kg over 5kg; users see estimated charge before scheduling; final charge is recalculated at completion using actual weight; collectors get Google Maps directions to user and recycling center with a route map
-- Collector navigation: after claiming a pickup, collectors see "Navigate to User" and "Navigate to Center" buttons (open Google Maps) plus a visual route map showing both locations; weekly bonuses: 5 pickups → ৳50, 10 → ৳150, 20 → ৳400
-- Eco-points & rewards: users earn 10 eco-points per kg of waste; points can be redeemed in the Eco Rewards Shop for vouchers, discounts, and exclusive offers
+- Waste pickup scheduling: users submit pickups with GPS location sharing + interactive map; delivery charge = ৳60 base (min) + ৳20/km after 3km + ৳5/kg over 5kg; users see estimated charge before scheduling; final charge is recalculated at completion using actual weight
+- Collector navigation: after claiming a pickup, collectors see "Navigate to User" and "Navigate to Center" buttons (open Google Maps) plus a visual route map; weekly bonuses: 5 pickups → ৳50, 10 → ৳150, 20 → ৳400
+- Eco-points & rewards: users earn 10 eco-points per kg of waste; points redeemable in the Eco Rewards Shop for vouchers and discounts
 - Carbon credits: recycling centers earn 0.5 credits/kg processed; users earn 5 credits per completed pickup; credits are tradeable in the Carbon Credit Marketplace
-- Badge milestones: users, collectors, and recycling centers earn badges for activity milestones (e.g. "Recycling Rookie", "Carbon Champion"). Admins award badges to recycling centers manually.
+- Badge milestones: users, collectors, and recycling centers earn badges for activity milestones (e.g. "Recycling Rookie", "Carbon Champion")
 - Community events: users can join sustainability events and workshops organized through the platform
-- Fraud detection: the system automatically flags suspicious pickups (>50 kg) for admin review
+- Fraud detection: system automatically flags suspicious pickups (>50 kg or >10% weight mismatch) for admin review
 - Leaderboard & impact: track collective stats — tons recycled, CO₂ saved, water saved, carbon credits issued
 
 Answer questions about the platform concisely and helpfully. Encourage sustainable habits. If asked something unrelated to GreenLoop or sustainability, gently redirect back to the platform's features.`;
 
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+      const completion = await aiClient.chat.completions.create({
+        model: 'stepfun/step-3.5-flash:free',
         messages: [
           { role: 'system', content: systemPrompt },
-          ...messages
+          ...messages,
         ],
-        max_completion_tokens: 500,
+        reasoning: { enabled: true },
+        max_tokens: 500,
+      } as any);
+
+      const assistantMessage = completion.choices[0]?.message as any;
+      res.json({
+        reply: assistantMessage?.content || 'I could not generate a response. Please try again.',
+        reasoning_details: assistantMessage?.reasoning_details || null,
       });
-      res.json({ reply: completion.choices[0]?.message?.content || 'I could not generate a response. Please try again.' });
     } catch (err: any) {
       console.error('Chat error:', err?.message);
+      if (err?.status === 401 || err?.message?.includes('401') || err?.message?.includes('Unauthorized')) {
+        return res.status(401).json({ message: 'Invalid API key. Please check your API key in environment secrets.' });
+      }
+      if (err?.status === 402 || err?.message?.includes('402') || err?.message?.includes('credits')) {
+        return res.status(402).json({ message: 'Insufficient API credits. Please top up your OpenRouter account at openrouter.ai/settings/credits.' });
+      }
       res.status(500).json({ message: 'AI service unavailable. Please try again shortly.' });
     }
   });

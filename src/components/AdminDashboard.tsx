@@ -22,6 +22,7 @@ export const AdminDashboard: React.FC = () => {
   const [badgeOptions, setBadgeOptions] = useState<any[]>([]);
   const [resolvingFraud, setResolvingFraud] = useState<string | null>(null);
   const [fraudFilter, setFraudFilter] = useState<'all' | 'open' | 'resolved'>('open');
+  const [selectedFraudForImages, setSelectedFraudForImages] = useState<string | null>(null);
   const [calculatingScore, setCalculatingScore] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -138,9 +139,17 @@ export const AdminDashboard: React.FC = () => {
   const fetchFraudDetection = async () => {
     try {
       const res = await fetch('/api/admin/fraud-detection', { headers: { 'Authorization': `Bearer ${token}` } });
+      if (!res.ok) {
+        console.error('Fraud detection API error:', res.status, res.statusText);
+        setFraudData([]);
+        return;
+      }
       const data = await res.json();
       setFraudData(Array.isArray(data) ? data : []);
-    } catch (err) { console.error(err); }
+    } catch (err) { 
+      console.error('Fraud detection error:', err); 
+      setFraudData([]);
+    }
   };
 
   const fetchHeatmapData = async () => {
@@ -629,7 +638,27 @@ export const AdminDashboard: React.FC = () => {
                             )}
                           </div>
                         </div>
-                        <div className="flex gap-2 flex-shrink-0">
+                        <div className="flex gap-2 flex-shrink-0 flex-wrap">
+                          {(() => {
+                            const existing = fraud.pickupId?.deliveryProofImages || [];
+                            const completion = fraud.pickupId?.completionPhoto;
+                            const proofImages: string[] = [...existing, ...(completion && !existing.includes(completion) ? [completion] : [])].filter(Boolean);
+                            const hasImages = proofImages.length > 0;
+                            return (
+                              <button
+                                onClick={() => setSelectedFraudForImages(selectedFraudForImages === fraud._id ? null : fraud._id)}
+                                disabled={!hasImages}
+                                className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${
+                                  hasImages
+                                    ? 'bg-blue-500 text-white hover:bg-blue-600'
+                                    : 'bg-white/5 text-zinc-500 border border-white/10 cursor-not-allowed'
+                                }`}
+                              >
+                                <Image className="w-4 h-4" />
+                                {hasImages ? `View ${proofImages.length} Proof ${proofImages.length === 1 ? 'Image' : 'Images'}` : 'No Images'}
+                              </button>
+                            );
+                          })()}
                           {!fraud.resolved ? (
                             <button
                               onClick={() => handleResolveFraud(fraud._id, true)}
@@ -649,6 +678,43 @@ export const AdminDashboard: React.FC = () => {
                           )}
                         </div>
                       </div>
+                      {(() => {
+                        const existing = fraud.pickupId?.deliveryProofImages || [];
+                        const completion = fraud.pickupId?.completionPhoto;
+                        const proofImages: string[] = [...existing, ...(completion && !existing.includes(completion) ? [completion] : [])].filter(Boolean);
+                        if (selectedFraudForImages !== fraud._id || proofImages.length === 0) return null;
+                        return (
+                          <div className="mt-6 pt-6 border-t border-blue-500/30 bg-blue-500/5 rounded-2xl p-6">
+                            <div className="flex items-center gap-2 mb-4">
+                              <Image className="w-5 h-5 text-blue-400" />
+                              <div className="text-sm font-bold text-zinc-300">Delivery Proof Gallery</div>
+                              <span className="ml-auto text-xs text-zinc-500">{proofImages.length} image{proofImages.length > 1 ? 's' : ''}</span>
+                            </div>
+                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                              {proofImages.map((imgUrl: string, idx: number) => (
+                                <div key={idx} className="relative group">
+                                  <div className="relative overflow-hidden rounded-2xl bg-zinc-800 border border-blue-500/20 group-hover:border-blue-500/60 transition-all">
+                                    <img
+                                      src={imgUrl}
+                                      alt={`Proof ${idx + 1}`}
+                                      className="w-full h-40 object-cover group-hover:scale-105 transition-transform duration-300"
+                                      onError={(e) => { (e.target as HTMLImageElement).src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="%23333"/><text y=".9em" font-size="12" fill="%23666" x="50%" text-anchor="middle" dy="50%">Error</text></svg>'; }}
+                                    />
+                                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                                      <a href={imgUrl} target="_blank" rel="noopener noreferrer" className="bg-blue-500 text-white p-2 rounded-full hover:bg-blue-400 transition-all">
+                                        <Eye className="w-4 h-4" />
+                                      </a>
+                                    </div>
+                                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2 text-white text-xs font-bold">
+                                      Photo {idx + 1}
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   ))}
               </div>

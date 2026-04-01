@@ -3,9 +3,55 @@ import { motion, AnimatePresence } from 'motion/react';
 import { MessageCircle, X, Send, Leaf, LogIn, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
+function renderMarkdown(text: string): React.ReactNode[] {
+  const lines = text.split('\n');
+  const nodes: React.ReactNode[] = [];
+
+  const parseInline = (str: string, key: string): React.ReactNode => {
+    const parts: React.ReactNode[] = [];
+    const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
+    let last = 0;
+    let match;
+    let idx = 0;
+    while ((match = regex.exec(str)) !== null) {
+      if (match.index > last) parts.push(str.slice(last, match.index));
+      if (match[2] !== undefined) parts.push(<strong key={`${key}-b${idx}`} className="font-semibold text-white">{match[2]}</strong>);
+      else if (match[3] !== undefined) parts.push(<em key={`${key}-i${idx}`} className="italic">{match[3]}</em>);
+      else if (match[4] !== undefined) parts.push(<code key={`${key}-c${idx}`} className="bg-zinc-700 px-1 py-0.5 rounded text-emerald-300 text-xs font-mono">{match[4]}</code>);
+      last = match.index + match[0].length;
+      idx++;
+    }
+    if (last < str.length) parts.push(str.slice(last));
+    return parts.length === 1 ? parts[0] : <span key={key}>{parts}</span>;
+  };
+
+  lines.forEach((line, i) => {
+    const key = `line-${i}`;
+    if (/^#{1,3}\s/.test(line)) {
+      const content = line.replace(/^#{1,3}\s/, '');
+      nodes.push(<p key={key} className="font-bold text-white mt-1">{parseInline(content, key)}</p>);
+    } else if (/^[-*•]\s/.test(line)) {
+      const content = line.replace(/^[-*•]\s/, '');
+      nodes.push(
+        <div key={key} className="flex gap-1.5 items-start">
+          <span className="text-emerald-400 mt-0.5 flex-shrink-0">•</span>
+          <span>{parseInline(content, key)}</span>
+        </div>
+      );
+    } else if (line.trim() === '') {
+      nodes.push(<div key={key} className="h-1.5" />);
+    } else {
+      nodes.push(<p key={key}>{parseInline(line, key)}</p>);
+    }
+  });
+
+  return nodes;
+}
+
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  reasoning_details?: unknown;
 }
 
 interface Props {
@@ -35,9 +81,37 @@ export function GreenLoopChatbot({ onSignInClick }: Props) {
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [streaming, setStreaming] = useState(false);
   const [pulse, setPulse] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const streamIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Clean up interval on unmount
+  useEffect(() => () => { if (streamIntervalRef.current) clearInterval(streamIntervalRef.current); }, []);
+
+  const streamReply = (fullText: string, reasoning_details?: unknown) => {
+    const words = fullText.split(' ');
+    let wordIdx = 0;
+    setStreaming(true);
+    // Add empty message placeholder
+    setMessages(prev => [...prev, { role: 'assistant', content: '', reasoning_details }]);
+    streamIntervalRef.current = setInterval(() => {
+      wordIdx++;
+      const partial = words.slice(0, wordIdx).join(' ');
+      setMessages(prev => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { ...updated[updated.length - 1], content: partial };
+        return updated;
+      });
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      if (wordIdx >= words.length) {
+        clearInterval(streamIntervalRef.current!);
+        streamIntervalRef.current = null;
+        setStreaming(false);
+      }
+    }, 35);
+  };
 
   useEffect(() => {
     setMessages([INITIAL_MESSAGE]);
@@ -61,7 +135,7 @@ export function GreenLoopChatbot({ onSignInClick }: Props) {
 
   const sendMessage = async (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || loading) return;
+    if (!trimmed || loading || streaming) return;
 
     const userMsg: Message = { role: 'user', content: trimmed };
     const updatedMessages = [...messages, userMsg];
@@ -71,20 +145,19 @@ export function GreenLoopChatbot({ onSignInClick }: Props) {
 
     if (!isAuthenticated) {
       setTimeout(() => {
-        setMessages(prev => [
-          ...prev,
-          {
-            role: 'assistant',
-            content: "🔐 To get personalized answers and make the most of GreenLoop, please **sign in** first!\n\nJoining GreenLoop means you can schedule pickups, earn eco-points, trade carbon credits, and help build a greener Bangladesh. It only takes a minute — sign up and start your green journey today! 🌿",
-          },
-        ]);
         setLoading(false);
+        streamReply("🔐 To get personalized answers and make the most of GreenLoop, please **sign in** first!\n\nJoining GreenLoop means you can schedule pickups, earn eco-points, trade carbon credits, and help build a greener Bangladesh. It only takes a minute — sign up and start your green journey today! 🌿");
       }, 600);
       return;
     }
 
     try {
-      const apiMessages = updatedMessages.map(m => ({ role: m.role, content: m.content }));
+      // Include reasoning_details for assistant messages to support multi-turn reasoning
+      const apiMessages = updatedMessages.map(m => {
+        const msg: any = { role: m.role, content: m.content };
+        if (m.reasoning_details) msg.reasoning_details = m.reasoning_details;
+        return msg;
+      });
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: {
@@ -94,20 +167,15 @@ export function GreenLoopChatbot({ onSignInClick }: Props) {
         body: JSON.stringify({ messages: apiMessages }),
       });
       const data = await res.json();
-      setMessages(prev => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: res.ok ? data.reply : (data.message || 'Something went wrong. Please try again.'),
-        },
-      ]);
-    } catch {
-      setMessages(prev => [
-        ...prev,
-        { role: 'assistant', content: 'Connection error. Please check your internet and try again.' },
-      ]);
-    } finally {
       setLoading(false);
+      if (res.ok) {
+        streamReply(data.reply || 'I could not generate a response. Please try again.', data.reasoning_details);
+      } else {
+        streamReply(data.message || 'Something went wrong. Please try again.');
+      }
+    } catch {
+      setLoading(false);
+      streamReply('Connection error. Please check your internet and try again.');
     }
   };
 
@@ -160,13 +228,16 @@ export function GreenLoopChatbot({ onSignInClick }: Props) {
                     </div>
                   )}
                   <div
-                    className={`max-w-[82%] px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
+                    className={`max-w-[82%] px-3.5 py-2.5 rounded-2xl text-sm leading-relaxed ${
                       msg.role === 'user'
-                        ? 'bg-emerald-500 text-black font-medium rounded-tr-sm'
-                        : 'bg-zinc-800/80 text-zinc-100 rounded-tl-sm'
+                        ? 'bg-emerald-500 text-black font-medium rounded-tr-sm whitespace-pre-wrap'
+                        : 'bg-zinc-800/80 text-zinc-100 rounded-tl-sm space-y-0.5'
                     }`}
                   >
-                    {msg.content}
+                    {msg.role === 'user' ? msg.content : renderMarkdown(msg.content)}
+                    {msg.role === 'assistant' && streaming && i === messages.length - 1 && (
+                      <span className="inline-block w-0.5 h-4 bg-emerald-400 ml-0.5 align-middle animate-pulse" />
+                    )}
                   </div>
                 </div>
               ))}
@@ -204,7 +275,7 @@ export function GreenLoopChatbot({ onSignInClick }: Props) {
             {!isAuthenticated && (
               <div className="px-4 pb-2">
                 <button
-                  onClick={onSignInClick}
+                  onClick={() => { setOpen(false); onSignInClick(); }}
                   className="w-full flex items-center justify-center gap-2 py-2.5 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold rounded-xl hover:bg-emerald-500/20 transition-all"
                 >
                   <LogIn className="w-3.5 h-3.5" />
@@ -223,12 +294,12 @@ export function GreenLoopChatbot({ onSignInClick }: Props) {
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder="Ask about GreenLoop..."
-                  disabled={loading}
+                  disabled={loading || streaming}
                   className="flex-1 bg-transparent text-sm text-white placeholder-zinc-500 focus:outline-none min-w-0 disabled:opacity-50"
                 />
                 <button
                   onClick={() => sendMessage(input)}
-                  disabled={!input.trim() || loading}
+                  disabled={!input.trim() || loading || streaming}
                   className="w-7 h-7 bg-emerald-500 rounded-full flex items-center justify-center hover:bg-emerald-400 transition-all active:scale-90 disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
                 >
                   {loading ? <Loader2 className="w-3.5 h-3.5 text-black animate-spin" /> : <Send className="w-3.5 h-3.5 text-black" />}

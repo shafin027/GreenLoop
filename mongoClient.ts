@@ -256,6 +256,7 @@ export interface IPickup extends Document {
   pickupDate?: Date;
   completedAt?: Date;
   completionPhoto?: string;
+  deliveryProofImages?: string[];
   co2Reduced: number;
   ecoPointsEarned: number;
   routeOptimized?: any;
@@ -275,6 +276,7 @@ const pickupSchema = new Schema<IPickup>({
   pickupDate: Date,
   completedAt: Date,
   completionPhoto: String,
+  deliveryProofImages: { type: [String], default: [] },
   co2Reduced: { type: Number, default: 0 },
   ecoPointsEarned: { type: Number, default: 0 },
   routeOptimized: Schema.Types.Mixed,
