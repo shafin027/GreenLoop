@@ -1,14 +1,14 @@
 import React from 'react';
 import { motion } from 'motion/react';
 import { Leaf, Recycle, BarChart3, ShieldCheck, ArrowRight, Menu, X, Globe, Zap, Users, LogOut, Calendar, Award, MapPin, Factory, ShoppingCart, Map, AlertTriangle, FileCheck, Trash2, Truck, TrendingUp, Wind, Droplets } from 'lucide-react';
-import { AuthModal } from './components/AuthModal';
-import { useAuth } from './context/AuthContext';
-import { UserDashboard } from './components/UserDashboard';
-import { CollectorDashboard } from './components/CollectorDashboard';
-import { AdminDashboard } from './components/AdminDashboard';
-import { RecyclingCenterDashboard } from './components/RecyclingCenterDashboard';
-import { BusinessDashboard } from './components/BusinessDashboard';
-import { GreenLoopChatbot } from './components/GreenLoopChatbot';
+import { AuthModal } from './frontend/views/AuthModal';
+import { useAuth } from './frontend/context/AuthContext';
+import { UserDashboard } from './frontend/views/UserDashboard';
+import { CollectorDashboard } from './frontend/views/CollectorDashboard';
+import { AdminDashboard } from './frontend/views/AdminDashboard';
+import { RecyclingCenterDashboard } from './frontend/views/RecyclingCenterDashboard';
+import { BusinessDashboard } from './frontend/views/BusinessDashboard';
+import { GreenLoopChatbot } from './frontend/views/GreenLoopChatbot';
 
 export default function App() {
   const [isMenuOpen, setIsMenuOpen] = React.useState(false);
