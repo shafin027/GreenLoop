@@ -8,7 +8,6 @@
 
 ![GreenLoop Dashboard](docs/screenshot.png)
 
-_Replace with your own screenshot image in `docs/screenshot.png` to showcase the UI live on GitHub._
 
 ## 🚀 Project Overview
 
