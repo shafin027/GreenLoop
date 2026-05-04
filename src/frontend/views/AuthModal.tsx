@@ -22,6 +22,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     address: '',
   });
   const [error, setError] = React.useState('');
+  const [adminSignupOpen, setAdminSignupOpen] = React.useState(false);
   const { login } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -47,6 +48,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
         login(data.token, data.user);
         onClose();
       } else {
+        if (role === 'admin') {
+          setAdminSignupOpen(false);
+        }
         setIsLogin(true);
         setError('Registration successful! Please login.');
       }
@@ -54,6 +58,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
       setError(err.message);
     }
   };
+
+  React.useEffect(() => {
+    if (!isOpen) return;
+
+    const checkAdminAvailability = async () => {
+      try {
+        const res = await fetch('/api/auth/admin-available');
+        if (res.ok) {
+          const data = await res.json();
+          setAdminSignupOpen(data.adminSignupOpen === true);
+          if (!data.adminSignupOpen && role === 'admin') {
+            setRole('user');
+          }
+        }
+      } catch (err) {
+        console.error('Failed to check admin signup availability', err);
+      }
+    };
+
+    checkAdminAvailability();
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -98,9 +123,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
           </div>
         )}
 
-        <div className="flex flex-wrap gap-2 p-1 bg-black/40 rounded-xl mb-8">
+        <div className="flex flex-wrap gap-2 p-1 bg-black/40 rounded-xl mb-4">
           {roles
-            .filter((r) => isLogin || r.id !== 'admin')
+            .filter((r) => isLogin || r.id !== 'admin' ? true : adminSignupOpen)
             .map((r) => (
               <button
                 key={r.id}
@@ -111,6 +136,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
               </button>
             ))}
         </div>
+        {!isLogin && !adminSignupOpen && (
+          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-200 mb-4">
+            Admin signup is closed once the first admin account is created.
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {!isLogin && (
