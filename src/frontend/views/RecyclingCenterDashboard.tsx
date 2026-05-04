@@ -87,7 +87,7 @@ export function RecyclingCenterDashboard() {
 
   const fetchAvailableCredits = async () => {
     try {
-      const res = await fetch('/api/carbon-credits/available');
+      const res = await fetch('/api/businesses/carbon-credits/available');
       if (res.ok) { const data = await res.json(); setAvailableCredits(Array.isArray(data) ? data : []); }
     } catch (e) { console.error(e); }
   };
@@ -597,7 +597,7 @@ export function RecyclingCenterDashboard() {
                 <p className="text-zinc-500">No active listings. List some credits above.</p>
               ) : (
                 <div className="space-y-3">
-                  {availableCredits.filter((c: any) => c.source === centerData?.centerName).map((credit: any, i: number) => (
+                  {availableCredits.filter((c: any) => c.centerId?._id === centerData?._id || c.source === centerData?.centerName).map((credit: any, i: number) => (
                     <div key={i} className="flex justify-between items-center p-4 bg-black/20 rounded-xl border border-white/5">
                       <div>
                         <div className="font-bold">{credit.amount} Credits</div>
