@@ -43,7 +43,7 @@ export function BusinessDashboard() {
 
   const fetchAvailableCredits = async () => {
     try {
-      const res = await fetch('/api/carbon-credits/available', { headers: { 'Authorization': `Bearer ${token}` } });
+      const res = await fetch('/api/businesses/carbon-credits/available', { headers: { 'Authorization': `Bearer ${token}` } });
       if (res.ok) { const data = await res.json(); setAvailableCredits(Array.isArray(data) ? data : []); }
     } catch (e) { console.error(e); }
   };
