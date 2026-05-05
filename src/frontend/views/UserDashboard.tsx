@@ -54,33 +54,6 @@ export const UserDashboard: React.FC = () => {
   const [ratingMsg, setRatingMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [submittingRating, setSubmittingRating] = useState(false);
 
-  const weekStart = (() => {
-    const now = new Date();
-    const day = now.getDay();
-    const start = new Date(now);
-    start.setDate(now.getDate() - day);
-    start.setHours(0, 0, 0, 0);
-    return start;
-  })();
-
-  const weeklyWeightCollected = pickups.reduce((sum, pickup) => {
-    if (pickup.status !== 'completed') return sum;
-    const completedAt = new Date(pickup.completedAt || pickup.updatedAt || pickup.createdAt || Date.now());
-    return completedAt >= weekStart
-      ? sum + (pickup.actualWeight || pickup.estimatedWeight || 0)
-      : sum;
-  }, 0);
-
-  const weeklyGoalTarget = userData
-    ? Math.max(20, Math.min(80,
-        20 + Math.floor((userData.ecoPoints || 0) / 100) * 10 + Math.floor((userData.totalCO2Reduced || 0) / 50) * 5
-      ))
-    : 50;
-
-  const weeklyProgress = weeklyGoalTarget > 0
-    ? Math.min(100, Math.round((weeklyWeightCollected / weeklyGoalTarget) * 100))
-    : 0;
-
   useEffect(() => {
     fetchPickups();
     fetchBadges();
@@ -171,8 +144,7 @@ export const UserDashboard: React.FC = () => {
 
   const fetchPosts = async () => {
     try {
-      const options = token ? { headers: { 'Authorization': `Bearer ${token}` } } : undefined;
-      const res = await fetch('/api/community/posts', options);
+      const res = await fetch('/api/community/posts');
       const data = await res.json();
       setPosts(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -276,16 +248,11 @@ export const UserDashboard: React.FC = () => {
   };
 
   const handleLike = async (postId: string) => {
-    if (!token) return;
     try {
-      const res = await fetch(`/api/community/posts/like/${postId}`, {
+      await fetch(`/api/community/posts/like/${postId}`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (!res.ok) {
-        const data = await res.json();
-        console.error('Like failed:', data.message || data);
-      }
       fetchPosts();
     } catch (err) {
       console.error(err);
@@ -737,11 +704,10 @@ export const UserDashboard: React.FC = () => {
                     <div className="p-4 bg-black/40 border-t border-white/5 flex items-center justify-between">
                       <button 
                         onClick={() => handleLike(post.id)}
-                        disabled={!token || post.isLiked}
-                        className={`flex items-center gap-2 text-sm font-bold transition-colors ${post.isLiked ? 'text-emerald-400 cursor-default' : 'text-zinc-400 hover:text-emerald-400'} ${!token ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        className="flex items-center gap-2 text-sm font-bold text-zinc-400 hover:text-emerald-400 transition-colors"
                       >
                         <Plus className="w-4 h-4" />
-                        {post.likes} Likes{post.isLiked ? ' • Liked' : ''}
+                        {post.likes} Likes
                       </button>
                       <button className="text-xs font-bold text-emerald-500 uppercase tracking-widest">Read More</button>
                     </div>
@@ -847,17 +813,13 @@ export const UserDashboard: React.FC = () => {
 
               <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-3xl p-8">
                 <h3 className="text-xl font-bold mb-4 text-emerald-500">Weekly Goal</h3>
-                <p className="text-sm text-emerald-500/80 mb-6">
-                  {userData
-                    ? `Collect ${weeklyGoalTarget.toFixed(0)}kg of recycled waste this week to level up your progress.`
-                    : 'Collect recycled waste this week to level up your progress.'}
-                </p>
+                <p className="text-sm text-emerald-500/80 mb-6">Collect 50kg of plastic this week to earn a "Plastic Warrior" badge!</p>
                 <div className="w-full bg-emerald-500/20 h-2 rounded-full mb-4">
-                  <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${weeklyProgress}%` }} />
+                  <div className="bg-emerald-500 h-full rounded-full" style={{ width: '65%' }} />
                 </div>
                 <div className="flex justify-between text-xs font-bold text-emerald-500">
-                  <span>{weeklyWeightCollected.toFixed(1)}kg collected</span>
-                  <span>{weeklyProgress}%</span>
+                  <span>32.5kg collected</span>
+                  <span>65%</span>
                 </div>
               </div>
             </div>
