@@ -28,6 +28,8 @@ export const updateMe = async (req: Request, res: Response) => {
   }
 };
 
+// Carbon credit features added
+
 export const listAvailableCredits = async (req: Request, res: Response) => {
   try {
     const credits = await CarbonCredit.find({ status: 'available' }).populate('centerId', 'centerName');

@@ -9,6 +9,8 @@ export interface IEventParticipant extends Document {
   createdAt: Date;
 }
 
+
+// Event model added
 const eventParticipantSchema = new Schema<IEventParticipant>({
   eventId: { type: Schema.Types.ObjectId, ref: 'CommunityEvent' },
   userId: { type: Schema.Types.ObjectId, ref: 'User' },
