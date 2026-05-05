@@ -4,7 +4,6 @@
 
 > GreenLoop is a sustainable waste management platform built for Bangladesh. It unites households, collectors, recycling centers, businesses, and admins with a modern React + Node.js + MongoDB stack.
 
-## 📸 Screenshots
 
 ![GreenLoop Dashboard](docs/screenshot.png)
 
