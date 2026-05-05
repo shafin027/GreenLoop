@@ -102,13 +102,11 @@ export function RecyclingCenterDashboard() {
   };
 
   const fetchBusinesses = async () => {
-    if (!token) return;
     try {
-      const res = await fetch('/api/recycling-centers/all', {
+      const res = await fetch('/api/businesses/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) { const data = await res.json(); setBusinesses(Array.isArray(data) ? data : []); }
-      else { console.error('Failed to load businesses', res.status, res.statusText); }
     } catch (e) { console.error(e); }
   };
 
