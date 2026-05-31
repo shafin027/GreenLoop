@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { DynamicIcon } from '../components/DynamicIcon';
 import { motion } from 'motion/react';
 import { BarChart3, CreditCard, Award, History, Zap, CheckCircle2, AlertCircle, TrendingUp, Globe, Leaf, ShoppingCart, MapPin } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -303,16 +305,20 @@ export function BusinessDashboard() {
                 {businessData.badges.map((badgeName: string, i: number) => {
                   const badgeInfo = allBadges.find(b => b.badgeName === badgeName);
                   return (
-                    <div key={i} className="bg-zinc-900/50 border border-amber-500/20 p-8 rounded-3xl text-center">
-                      <div className="w-20 h-20 bg-amber-500/10 rounded-3xl flex items-center justify-center mx-auto mb-4">
+                    <div key={i} className="bg-white/5 border border-white/10 p-8 rounded-[2rem] text-center hover:border-amber-500/30 hover:bg-white/10 transition-colors duration-200 shadow-sm cursor-pointer group">
+                      <div className="w-16 h-16 bg-amber-500/10 rounded-2xl flex items-center justify-center mx-auto mb-4 ring-1 ring-white/10 group-hover:ring-amber-500/30 group-hover:scale-110 transition-all duration-200">
                         {badgeInfo?.iconURL ? (
-                          <img src={badgeInfo.iconURL} alt={badgeName} className="w-10 h-10 object-contain" />
+                          badgeInfo.iconURL.startsWith('http') || badgeInfo.iconURL.startsWith('data:') ? (
+                            <img src={badgeInfo.iconURL} alt={badgeName} className="w-8 h-8 object-contain" />
+                          ) : (
+                            <DynamicIcon name={badgeInfo.iconURL} className="w-8 h-8 text-amber-400" />
+                          )
                         ) : (
-                          <Award className="text-amber-400 w-10 h-10" />
+                          <Award className="text-amber-400 w-8 h-8" />
                         )}
                       </div>
-                      <h4 className="text-lg font-bold text-amber-400 mb-2">{badgeName}</h4>
-                      {badgeInfo?.description && <p className="text-sm text-zinc-400">{badgeInfo.description}</p>}
+                      <h4 className="text-lg font-bold text-amber-400 mb-2 group-hover:text-amber-300 transition-colors">{badgeName}</h4>
+                      {badgeInfo?.description && <p className="text-sm text-zinc-400 group-hover:text-zinc-300 transition-colors">{badgeInfo.description}</p>}
                     </div>
                   );
                 })}

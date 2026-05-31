@@ -1,4 +1,6 @@
-import { FraudLog } from '../models/FraudLog';
+import { db } from '../db';
+import { fraudLogs } from '../schema';
+import { eq } from 'drizzle-orm';
 
 export async function detectFraud(pickup: any): Promise<boolean> {
   const estimatedW = pickup.estimatedWeight || 0;
@@ -22,8 +24,8 @@ export async function logFraudIfNeeded(
   
   if (!isFraudulent) return;
   
-  const existing = await FraudLog.findOne({ pickupId });
-  if (existing) return;
+  const existing = await db.select().from(fraudLogs).where(eq(fraudLogs.pickupId, pickupId)).limit(1);
+  if (existing.length > 0) return;
   
   const mismatchPct = estimatedWeight > 0 ? Math.abs(actualWeight - estimatedWeight) / estimatedWeight : 0;
   let reason: string;
@@ -36,11 +38,11 @@ export async function logFraudIfNeeded(
     reason = `High risk: estimated ${estimatedWeight}kg → actual ${actualWeight}kg (${Math.round(mismatchPct * 100)}% diff)`;
     severity = 'high';
   } else {
-    reason = `Suspicious: estimated ${estimatedWeight}kg → actual ${actualWeight}kg (${Math.round(mismatchPct * 100)}% diff, or >50kg`;
+    reason = `Suspicious: estimated ${estimatedWeight}kg → actual ${actualWeight}kg (${Math.round(mismatchPct * 100)}% diff, or >50kg)`;
     severity = 'medium';
   }
   
-  await FraudLog.create({ 
+  await db.insert(fraudLogs).values({ 
     collectorId, 
     pickupId, 
     reason, 

@@ -1,51 +1,86 @@
-import { Request, Response, NextFunction } from 'express';
-import { User } from '../models/User';
-import { Collector } from '../models/Collector';
-import { RecyclingCenter } from '../models/RecyclingCenter';
-import { Pickup } from '../models/Pickup';
-import { Badge } from '../models/Badge';
+import { Request, Response } from 'express';
+import { db } from '../db';
+import { users, pickups, collectors, recyclingCenters, badges } from '../schema';
+import { eq, and, desc, asc, or, isNotNull } from 'drizzle-orm';
 import { ECO_POINTS_RATE, USER_CREDITS_PER_PICKUP, WEEKLY_MILESTONES, CARBON_CREDIT_RATES, DEFAULT_CREDIT_RATE, calcDeliveryCharge, haversineKm } from '../utils/helpers';
 
-export const getMe = async (req: Request, res: Response) => {
+export const getMe = async (req: Request, res: Response): Promise<void> => {
   try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: "User not found" });
-    res.json(user);
+    const userRes = await db.select().from(users).where(eq(users.id, (req as any).user.id)).limit(1);
+    const user = userRes[0];
+    if (!user) {
+      res.status(404).json({ message: "User not found" });
+      return;
+    }
+    res.json({ ...user, _id: user.id });
   } catch (error: any) {
     res.status(400).json({ message: error.message });
   }
 };
 
-export const updateMe = async (req: Request, res: Response) => {
+export const updateMe = async (req: Request, res: Response): Promise<void> => {
   try {
     const { name, phone, location } = req.body;
-    const user = await User.findByIdAndUpdate(req.user.id, { name, phone, location }, { new: true });
-    if (!user) return res.status(404).json({ message: "User not found" });
-    res.json(user);
+    const updated = await db.update(users).set({ name, phone, location }).where(eq(users.id, (req as any).user.id)).returning();
+    if (updated.length === 0) {
+      res.status(404).json({ message: "User not found" });
+      return;
+    }
+    res.json(updated[0]);
   } catch (error: any) {
     res.status(400).json({ message: error.message });
   }
 };
 
-export const getMyPickups = async (req: Request, res: Response) => {
+export const getMyPickups = async (req: Request, res: Response): Promise<void> => {
   try {
-    const pickups = await Pickup.find({ userId: req.user.id })
-      .populate('collectorId', 'name phone performanceRating totalRatings')
-      .populate('centerId', 'centerName address')
-      .sort({ createdAt: -1 });
-    res.json(pickups);
+    const result = await db.select({
+      pickup: pickups,
+      collector: {
+        name: collectors.name,
+        phone: collectors.phone,
+        performanceRating: collectors.performanceRating,
+        totalRatings: collectors.totalRatings
+      },
+      center: {
+        centerName: recyclingCenters.centerName,
+        address: recyclingCenters.address
+      }
+    })
+    .from(pickups)
+    .leftJoin(collectors, eq(pickups.collectorId, collectors.id))
+    .leftJoin(recyclingCenters, eq(pickups.centerId, recyclingCenters.id))
+    .where(eq(pickups.userId, (req as any).user.id))
+    .orderBy(desc(pickups.createdAt));
+
+    res.json(result.map(row => ({
+      ...row.pickup,
+      _id: row.pickup.id,
+      collectorId: row.collector ? { id: row.pickup.collectorId, _id: row.pickup.collectorId, ...row.collector } : null,
+      centerId: row.center ? { id: row.pickup.centerId, _id: row.pickup.centerId, ...row.center } : null
+    })));
   } catch (error: any) {
     res.status(400).json({ message: error.message });
   }
 };
 
-export const getLeaderboard = async (req: Request, res: Response) => {
+export const getLeaderboard = async (req: Request, res: Response): Promise<void> => {
   try {
-    const users = await User.find({ role: 'user' })
-      .select('name email ecoPoints totalCO2Reduced badges createdAt')
-      .sort({ ecoPoints: -1, totalCO2Reduced: -1, name: 1 });
-    const ranked = users.map((user, idx) => ({
-      id: user._id,
+    const allUsers = await db.select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      ecoPoints: users.ecoPoints,
+      totalCO2Reduced: users.totalCO2Reduced,
+      badges: users.badges,
+      createdAt: users.createdAt
+    })
+    .from(users)
+    .where(eq(users.role, 'user'))
+    .orderBy(desc(users.ecoPoints), desc(users.totalCO2Reduced), asc(users.name));
+
+    const ranked = allUsers.map((user, idx) => ({
+      id: user.id,
       name: user.name || user.email,
       ecoPoints: user.ecoPoints || 0,
       totalCO2Reduced: user.totalCO2Reduced || 0,
@@ -58,82 +93,129 @@ export const getLeaderboard = async (req: Request, res: Response) => {
   }
 };
 
-export const ratePickup = async (req: Request, res: Response) => {
+export const ratePickup = async (req: Request, res: Response): Promise<void> => {
   try {
     const { stars, review } = req.body;
-    if (!stars || stars < 1 || stars > 5) return res.status(400).json({ message: "Stars must be 1–5" });
-    const pickup = await Pickup.findOne({ _id: req.params.id, userId: req.user.id, status: 'completed' });
-    if (!pickup) return res.status(404).json({ message: "Completed pickup not found" });
-    if (pickup.rating?.stars) return res.status(400).json({ message: "Already rated" });
-    pickup.rating = { stars, review: review || '', ratedAt: new Date() };
-    await pickup.save();
-    // Update collector's performance rating
+    if (!stars || stars < 1 || stars > 5) {
+      res.status(400).json({ message: "Stars must be 1–5" });
+      return;
+    }
+    const pickupRes = await db.select().from(pickups).where(and(
+      eq(pickups.id, req.params.id),
+      eq(pickups.userId, (req as any).user.id),
+      eq(pickups.status, 'completed')
+    )).limit(1);
+    
+    const pickup = pickupRes[0];
+    if (!pickup) {
+      res.status(404).json({ message: "Completed pickup not found" });
+      return;
+    }
+    
+    const ratingObj = pickup.rating as any;
+    if (ratingObj?.stars) {
+      res.status(400).json({ message: "Already rated" });
+      return;
+    }
+    
+    const updated = await db.update(pickups).set({
+      rating: { stars, review: review || '', ratedAt: new Date().toISOString() }
+    }).where(eq(pickups.id, req.params.id)).returning();
+    
     if (pickup.collectorId) {
-      const collector = await Collector.findById(pickup.collectorId);
+      const collectorRes = await db.select().from(collectors).where(eq(collectors.id, pickup.collectorId)).limit(1);
+      const collector = collectorRes[0];
       if (collector) {
-        collector.ratingSum = (collector.ratingSum || 0) + stars;
-        collector.totalRatings = (collector.totalRatings || 0) + 1;
-        collector.performanceRating = Math.round((collector.ratingSum / collector.totalRatings) * 10) / 10;
-        await collector.save();
+        const newRatingSum = (collector.ratingSum || 0) + stars;
+        const newTotalRatings = (collector.totalRatings || 0) + 1;
+        const newPerformanceRating = Math.round((newRatingSum / newTotalRatings) * 10) / 10;
+        await db.update(collectors).set({
+          ratingSum: newRatingSum,
+          totalRatings: newTotalRatings,
+          performanceRating: newPerformanceRating
+        }).where(eq(collectors.id, pickup.collectorId));
       }
     }
-    res.json({ message: "Rating submitted successfully", pickup });
+    res.json({ message: "Rating submitted successfully", pickup: { ...updated[0], _id: updated[0].id } });
   } catch (error: any) {
     res.status(400).json({ message: error.message });
   }
 };
 
-export const getBadgeProgress = async (req: Request, res: Response) => {
+export const getBadgeProgress = async (req: Request, res: Response): Promise<void> => {
   try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: "User not found" });
-    const allBadges = await Badge.find({ targetRole: { $in: ['user', 'all'] }, criteria: { $ne: null } });
-    const completedPickups = await Pickup.find({ userId: req.user.id, status: 'completed' });
+    const userRes = await db.select().from(users).where(eq(users.id, (req as any).user.id)).limit(1);
+    const user = userRes[0];
+    if (!user) {
+      res.status(404).json({ message: "User not found" });
+      return;
+    }
+    
+    const allBadges = await db.select().from(badges).where(and(
+      or(eq(badges.targetRole, 'user'), eq(badges.targetRole, 'all')),
+      isNotNull(badges.criteria)
+    ));
+    
+    const completedPickups = await db.select().from(pickups).where(and(
+      eq(pickups.userId, (req as any).user.id),
+      eq(pickups.status, 'completed')
+    ));
+    
     const completedCount = completedPickups.length;
-    const progress = await Promise.all(allBadges.map(async (badge) => {
+    
+    const progress = allBadges.map((badge) => {
       let current = 0;
-      let threshold = badge.criteria?.threshold || 0;
-      if (badge.criteria?.type === 'pickupsCompleted') current = completedCount;
-      else if (badge.criteria?.type === 'ecoPoints') current = user.ecoPoints || 0;
-      else if (badge.criteria?.type === 'co2Reduced') current = user.totalCO2Reduced || 0;
-      else if (badge.criteria?.type === 'carbonCredits') current = user.carbonCreditsBalance || 0;
+      const criteria = badge.criteria as any;
+      const threshold = criteria?.threshold || 0;
+      if (criteria?.type === 'pickupsCompleted') current = completedCount;
+      else if (criteria?.type === 'ecoPoints') current = user.ecoPoints || 0;
+      else if (criteria?.type === 'co2Reduced') current = user.totalCO2Reduced || 0;
+      else if (criteria?.type === 'carbonCredits') current = user.carbonCreditsBalance || 0;
+      
+      const userBadges = Array.isArray(user.badges) ? (user.badges as string[]) : [];
+
       return {
-        _id: badge._id,
+        _id: badge.id,
         badgeName: badge.badgeName,
         description: badge.description,
         iconURL: badge.iconURL,
-        criteria: badge.criteria,
+        criteria,
         current,
         threshold,
-        earned: user.badges.includes(badge.badgeName),
+        earned: userBadges.includes(badge.badgeName),
         completedPickups: completedCount,
         wasteBreakdown: completedPickups.reduce((acc: any, p) => {
           acc[p.wasteType] = (acc[p.wasteType] || 0) + (p.actualWeight || p.estimatedWeight || 0);
           return acc;
         }, {})
       };
-    }));
+    });
     res.json(progress);
   } catch (error: any) {
     res.status(400).json({ message: error.message });
   }
 };
 
-export const estimateCharge = async (req: Request, res: Response) => {
+export const estimateCharge = async (req: Request, res: Response): Promise<void> => {
   try {
     const { lat, lng, weightKg = 5 } = req.body;
-    if (!lat || !lng) return res.status(400).json({ message: "Location required" });
-    const centers = await RecyclingCenter.find();
+    if (!lat || !lng) {
+      res.status(400).json({ message: "Location required" });
+      return;
+    }
+    const centers = await db.select().from(recyclingCenters);
     let nearest: any = null;
     let minDist = Infinity;
     for (const c of centers) {
-      if (!c.location?.lat || !c.location?.lng) continue;
-      const dist = haversineKm(lat, lng, c.location.lat, c.location.lng);
+      const cLoc = c.location as any;
+      if (!cLoc?.lat || !cLoc?.lng) continue;
+      const dist = haversineKm(lat, lng, cLoc.lat, cLoc.lng);
       if (dist < minDist) { minDist = dist; nearest = c; }
     }
     if (!nearest || minDist === Infinity) {
       const fallback = calcDeliveryCharge(0, weightKg);
-      return res.json({ charge: fallback, distanceKm: 0, nearestCenter: null });
+      res.json({ charge: fallback, distanceKm: 0, nearestCenter: null });
+      return;
     }
     const charge = calcDeliveryCharge(minDist, weightKg);
     res.json({
@@ -146,58 +228,103 @@ export const estimateCharge = async (req: Request, res: Response) => {
   }
 };
 
-export const claimBadge = async (req: Request, res: Response) => {
+export const claimBadge = async (req: Request, res: Response): Promise<void> => {
   try {
     const { badgeName } = req.body;
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: "User not found" });
-    if (user.badges.includes(badgeName)) return res.status(400).json({ message: "Badge already claimed" });
-    const badge = await Badge.findOne({ badgeName, targetRole: { $in: ['user', 'all'] } });
-    if (!badge || !badge.criteria) return res.status(400).json({ message: "Badge not found or not claimable" });
-    const completedPickups = await Pickup.find({ userId: req.user.id, status: 'completed' });
+    const userRes = await db.select().from(users).where(eq(users.id, (req as any).user.id)).limit(1);
+    const user = userRes[0];
+    if (!user) {
+      res.status(404).json({ message: "User not found" });
+      return;
+    }
+    const userBadges = Array.isArray(user.badges) ? (user.badges as string[]) : [];
+    if (userBadges.includes(badgeName)) {
+      res.status(400).json({ message: "Badge already claimed" });
+      return;
+    }
+    
+    const badgeRes = await db.select().from(badges).where(and(
+      eq(badges.badgeName, badgeName),
+      or(eq(badges.targetRole, 'user'), eq(badges.targetRole, 'all'))
+    )).limit(1);
+    const badge = badgeRes[0];
+    if (!badge || !badge.criteria) {
+      res.status(400).json({ message: "Badge not found or not claimable" });
+      return;
+    }
+    
+    const completedPickups = await db.select().from(pickups).where(and(
+      eq(pickups.userId, (req as any).user.id),
+      eq(pickups.status, 'completed')
+    ));
     const completedCount = completedPickups.length;
+    
     let met = false;
-    if (badge.criteria.type === 'pickupsCompleted' && completedCount >= badge.criteria.threshold) met = true;
-    if (badge.criteria.type === 'ecoPoints' && (user.ecoPoints || 0) >= badge.criteria.threshold) met = true;
-    if (badge.criteria.type === 'co2Reduced' && (user.totalCO2Reduced || 0) >= badge.criteria.threshold) met = true;
-    if (badge.criteria.type === 'carbonCredits' && (user.carbonCreditsBalance || 0) >= badge.criteria.threshold) met = true;
-    if (!met) return res.status(400).json({ message: "You have not met the criteria for this badge yet. Only completed pickups (collected by a collector) count towards your progress." });
-    user.badges.push(badgeName);
-    await user.save();
-    res.json({ message: `Badge "${badgeName}" claimed successfully!`, badges: user.badges });
+    const criteria = badge.criteria as any;
+    if (criteria.type === 'pickupsCompleted' && completedCount >= criteria.threshold) met = true;
+    if (criteria.type === 'ecoPoints' && (user.ecoPoints || 0) >= criteria.threshold) met = true;
+    if (criteria.type === 'co2Reduced' && (user.totalCO2Reduced || 0) >= criteria.threshold) met = true;
+    if (criteria.type === 'carbonCredits' && (user.carbonCreditsBalance || 0) >= criteria.threshold) met = true;
+    
+    if (!met) {
+      res.status(400).json({ message: "You have not met the criteria for this badge yet. Only completed pickups (collected by a collector) count towards your progress." });
+      return;
+    }
+    
+    userBadges.push(badgeName);
+    await db.update(users).set({ badges: userBadges }).where(eq(users.id, (req as any).user.id));
+    res.json({ message: `Badge "${badgeName}" claimed successfully!`, badges: userBadges });
   } catch (error: any) {
     res.status(400).json({ message: error.message });
   }
 };
 
-export const redeemReward = async (req: Request, res: Response) => {
+export const redeemReward = async (req: Request, res: Response): Promise<void> => {
   try {
     const { rewardId, rewardTitle, pointsCost } = req.body;
     if (!rewardTitle || !pointsCost || pointsCost <= 0) {
-      return res.status(400).json({ message: "Invalid reward data" });
+      res.status(400).json({ message: "Invalid reward data" });
+      return;
     }
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: "User not found" });
+    const userRes = await db.select().from(users).where(eq(users.id, (req as any).user.id)).limit(1);
+    const user = userRes[0];
+    if (!user) {
+      res.status(404).json({ message: "User not found" });
+      return;
+    }
     if ((user.ecoPoints || 0) < pointsCost) {
-      return res.status(400).json({ message: "Insufficient eco-points" });
+      res.status(400).json({ message: "Insufficient eco-points" });
+      return;
     }
-    user.ecoPoints = (user.ecoPoints || 0) - pointsCost;
-    user.redeemedRewards.push({ rewardId, rewardTitle, pointsCost, redeemedAt: new Date() });
-    await user.save();
+    
+    const redeemed = Array.isArray(user.redeemedRewards) ? (user.redeemedRewards as any[]) : [];
+    redeemed.push({ rewardId, rewardTitle, pointsCost, redeemedAt: new Date().toISOString() });
+    
+    await db.update(users).set({
+      ecoPoints: (user.ecoPoints || 0) - pointsCost,
+      redeemedRewards: redeemed
+    }).where(eq(users.id, (req as any).user.id));
+    
     res.json({
       message: `"${rewardTitle}" redeemed successfully!`,
-      ecoPoints: user.ecoPoints
+      ecoPoints: (user.ecoPoints || 0) - pointsCost
     });
   } catch (error: any) {
     res.status(400).json({ message: error.message });
   }
 };
 
-export const getRedeemedRewards = async (req: Request, res: Response) => {
+export const getRedeemedRewards = async (req: Request, res: Response): Promise<void> => {
   try {
-    const user = await User.findById(req.user.id).select('redeemedRewards');
-    if (!user) return res.status(404).json({ message: "User not found" });
-    const history = [...(user.redeemedRewards || [])].sort(
+    const userRes = await db.select({ redeemedRewards: users.redeemedRewards }).from(users).where(eq(users.id, (req as any).user.id)).limit(1);
+    const user = userRes[0];
+    if (!user) {
+      res.status(404).json({ message: "User not found" });
+      return;
+    }
+    
+    const redeemed = Array.isArray(user.redeemedRewards) ? (user.redeemedRewards as any[]) : [];
+    const history = [...redeemed].sort(
       (a, b) => new Date(b.redeemedAt).getTime() - new Date(a.redeemedAt).getTime()
     );
     res.json(history);
@@ -206,18 +333,19 @@ export const getRedeemedRewards = async (req: Request, res: Response) => {
   }
 };
 
-export const schedulePickup = async (req: Request, res: Response) => {
+export const schedulePickup = async (req: Request, res: Response): Promise<void> => {
   try {
     const { location, ...pickupData } = req.body;
     if (location?.lat && location?.lng) {
-      await User.findByIdAndUpdate(req.user.id, { location });
+      await db.update(users).set({ location }).where(eq(users.id, (req as any).user.id));
     }
-    const pickup = await Pickup.create({
+    const inserted = await db.insert(pickups).values({
       ...pickupData,
-      userId: req.user.id,
+      userId: (req as any).user.id,
       status: 'pending'
-    });
-    res.status(201).json(pickup);
+    }).returning();
+    
+    res.status(201).json(inserted[0]);
   } catch (error: any) {
     res.status(400).json({ message: error.message });
   }

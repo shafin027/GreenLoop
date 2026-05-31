@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import OpenAI from 'openai';
+import Groq from "groq-sdk";
 
 type ChatRequest = Request & {
   user?: {
@@ -9,32 +9,29 @@ type ChatRequest = Request & {
   };
 };
 
-const apiKey = process.env.OPENROUTER_API;
-const model = process.env.OPENROUTER_MODEL || 'minimax/minimax-m2.5:free';
+const apiKey = process.env.GROQ_API_KEY;
 
 if (!apiKey) {
-  throw new Error('Missing OpenRouter API key. Set OPENROUTER_API in .env');
+  console.warn('Warning: GROQ_API_KEY is not set in environment variables. Chatbot queries will fail.');
 }
 
-const openai = new OpenAI({
-  apiKey,
-  baseURL: 'https://openrouter.ai/api/v1',
+const groq = new Groq({
+  apiKey: apiKey || 'dummy_key',
 });
 
-const requestChatCompletion = async (client: OpenAI, modelName: string, messages: any[]) => {
-  return client.chat.completions.create({
-    model: modelName,
-    messages,
-    max_tokens: 400,
-    temperature: 0.2,
-  });
-};
-
-export const chatHandler = async (req: ChatRequest, res: Response) => {
+export const chatHandler = async (req: ChatRequest, res: Response): Promise<void> => {
   try {
     const { messages } = req.body;
     if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ message: 'Messages array required' });
+      res.status(400).json({ message: 'Messages array required' });
+      return;
+    }
+
+    if (!process.env.GROQ_API_KEY) {
+      res.status(503).json({
+        message: 'Chat service unavailable: Groq API key is not configured.'
+      });
+      return;
     }
 
     const userSummary = req.user ? JSON.stringify(req.user) : 'guest';
@@ -45,7 +42,7 @@ export const chatHandler = async (req: ChatRequest, res: Response) => {
 - If the user asks about the project, be specific and concise.
 - If you cannot answer, say you cannot answer.
 
-Project context: GreenLoop is a Node/Express + MongoDB backend with React frontend, role-based auth, and an AI chatbot interface.
+Project context: GreenLoop is a Node/Express + Neon Postgres (Drizzle ORM) backend with React frontend, role-based auth, and an AI chatbot interface.
 
 User context: ${userSummary}`;
 
@@ -57,19 +54,24 @@ User context: ${userSummary}`;
     const fullMessages = [{ role: 'system', content: systemPrompt }, ...sanitizedMessages];
 
     try {
-      const completion = await requestChatCompletion(openai, model, fullMessages);
+      const completion = await groq.chat.completions.create({
+        model: "groq/compound",
+        messages: fullMessages as any,
+      });
       const reply = completion.choices?.[0]?.message?.content || 'Sorry, I could not generate a response.';
       const reasoning_details = completion.usage;
-      return res.json({ reply, reasoning_details });
+      res.json({ reply, reasoning_details });
+      return;
     } catch (innerError: any) {
       const status = innerError?.status;
       const message = innerError?.message || String(innerError);
 
       if (status === 429 || innerError?.name === 'APIConnectionTimeoutError' || innerError?.type === 'APIConnectionTimeoutError') {
-        return res.status(503).json({
-          message: 'Chat service unavailable: OpenRouter is temporarily unavailable. Please try again later.',
+        res.status(503).json({
+          message: 'Chat service unavailable: Groq is temporarily unavailable. Please try again later.',
           error: process.env.NODE_ENV === 'development' ? message : undefined,
         });
+        return;
       }
 
       throw innerError;
@@ -82,4 +84,3 @@ User context: ${userSummary}`;
     });
   }
 };
-

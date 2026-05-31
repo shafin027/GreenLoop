@@ -1,32 +1,40 @@
-import { User } from '../models/User';
-import { Collector } from '../models/Collector';
-import { RecyclingCenter } from '../models/RecyclingCenter';
-import { Badge } from '../models/Badge';
-import { Pickup } from '../models/Pickup';
-import type { HydratedDocument } from 'mongoose';
+import { db } from '../db';
+import { users, collectors, recyclingCenters, badges, pickups } from '../schema';
+import { eq, or, and, count } from 'drizzle-orm';
 
-export async function checkAndAwardUserBadges(userId: string) {
+export async function checkAndAwardUserBadges(userId: string): Promise<void> {
   try {
-    const user = await User.findById(userId) as HydratedDocument<any> | null;
+    const userRes = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    const user = userRes[0];
     if (!user) return;
     
-    const allBadges = await Badge.find({ targetRole: { $in: ['user', 'all'] } });
+    const allBadges = await db.select().from(badges).where(
+      or(eq(badges.targetRole, 'user'), eq(badges.targetRole, 'all'))
+    );
+    
+    const userBadges = Array.isArray(user.badges) ? (user.badges as string[]) : [];
+    
     for (const badge of allBadges) {
-      if (user.badges.includes(badge.badgeName)) continue;
+      if (userBadges.includes(badge.badgeName)) continue;
       if (!badge.criteria) continue;
       
+      const criteria = badge.criteria as any;
       let earned = false;
-      if (badge.criteria.type === 'ecoPoints' && user.ecoPoints >= badge.criteria.threshold) earned = true;
-      if (badge.criteria.type === 'co2Reduced' && user.totalCO2Reduced >= badge.criteria.threshold) earned = true;
-      if (badge.criteria.type === 'pickupsCompleted') {
-        const count = await Pickup.countDocuments({ userId, status: 'completed' });
-        if (count >= badge.criteria.threshold) earned = true;
+      
+      if (criteria.type === 'ecoPoints' && (user.ecoPoints || 0) >= criteria.threshold) earned = true;
+      if (criteria.type === 'co2Reduced' && (user.totalCO2Reduced || 0) >= criteria.threshold) earned = true;
+      if (criteria.type === 'pickupsCompleted') {
+        const countRes = await db.select({ value: count() }).from(pickups).where(
+          and(eq(pickups.userId, userId), eq(pickups.status, 'completed'))
+        );
+        const cnt = countRes[0]?.value || 0;
+        if (cnt >= criteria.threshold) earned = true;
       }
-      if (badge.criteria.type === 'carbonCredits' && user.carbonCreditsBalance >= badge.criteria.threshold) earned = true;
+      if (criteria.type === 'carbonCredits' && (user.carbonCreditsBalance || 0) >= criteria.threshold) earned = true;
       
       if (earned) {
-        user.badges.push(badge.badgeName);
-        await user.save();
+        userBadges.push(badge.badgeName);
+        await db.update(users).set({ badges: userBadges }).where(eq(users.id, userId));
       }
     }
   } catch (err) {
@@ -34,24 +42,32 @@ export async function checkAndAwardUserBadges(userId: string) {
   }
 }
 
-export async function checkAndAwardCollectorBadges(collectorId: string) {
+export async function checkAndAwardCollectorBadges(collectorId: string): Promise<void> {
   try {
-    const collector = await Collector.findById(collectorId) as HydratedDocument<any> | null;
+    const collectorRes = await db.select().from(collectors).where(eq(collectors.id, collectorId)).limit(1);
+    const collector = collectorRes[0];
     if (!collector) return;
     
-    const allBadges = await Badge.find({ targetRole: { $in: ['collector', 'all'] } });
+    const allBadges = await db.select().from(badges).where(
+      or(eq(badges.targetRole, 'collector'), eq(badges.targetRole, 'all'))
+    );
+    
+    const collectorBadges = Array.isArray(collector.badges) ? (collector.badges as string[]) : [];
+    
     for (const badge of allBadges) {
-      if (collector.badges.includes(badge.badgeName)) continue;
+      if (collectorBadges.includes(badge.badgeName)) continue;
       if (!badge.criteria) continue;
       
+      const criteria = badge.criteria as any;
       let earned = false;
-      if (badge.criteria.type === 'pickupsCompleted' && collector.totalPickups >= badge.criteria.threshold) earned = true;
-      if (badge.criteria.type === 'weeklyPickups' && collector.weeklyPickups >= badge.criteria.threshold) earned = true;
-      if (badge.criteria.type === 'totalEarnings' && collector.totalEarnings >= badge.criteria.threshold) earned = true;
+      
+      if (criteria.type === 'pickupsCompleted' && (collector.totalPickups || 0) >= criteria.threshold) earned = true;
+      if (criteria.type === 'weeklyPickups' && (collector.weeklyPickups || 0) >= criteria.threshold) earned = true;
+      if (criteria.type === 'totalEarnings' && (collector.totalEarnings || 0) >= criteria.threshold) earned = true;
       
       if (earned) {
-        collector.badges.push(badge.badgeName);
-        await collector.save();
+        collectorBadges.push(badge.badgeName);
+        await db.update(collectors).set({ badges: collectorBadges }).where(eq(collectors.id, collectorId));
       }
     }
   } catch (err) {
@@ -59,35 +75,55 @@ export async function checkAndAwardCollectorBadges(collectorId: string) {
   }
 }
 
-export async function checkAndAwardCenterBadges(centerId: string) {
+export async function checkAndAwardCenterBadges(centerId: string): Promise<void> {
   try {
-    const center = await RecyclingCenter.findById(centerId) as HydratedDocument<any> | null;
+    const centerRes = await db.select().from(recyclingCenters).where(eq(recyclingCenters.id, centerId)).limit(1);
+    const center = centerRes[0];
     if (!center) return;
     
-    const allBadges = await Badge.find({ targetRole: 'recycling_center', criteria: { $ne: null } });
+    const allBadges = await db.select().from(badges).where(eq(badges.targetRole, 'recycling_center'));
+    
+    const centerBadges = Array.isArray(center.badges) ? (center.badges as string[]) : [];
+    
     for (const badge of allBadges) {
-      if (center.badges.includes(badge.badgeName)) continue;
+      if (centerBadges.includes(badge.badgeName)) continue;
       if (!badge.criteria) continue;
       
+      const criteria = badge.criteria as any;
       let earned = false;
-      if (badge.criteria.type === 'pickupsProcessed') {
-        const count = await Pickup.countDocuments({ centerId, status: 'completed' });
-        if (count >= badge.criteria.threshold) earned = true;
+      
+      if (criteria.type === 'pickupsProcessed') {
+        const countRes = await db.select({ value: count() }).from(pickups).where(
+          and(eq(pickups.centerId, centerId), eq(pickups.status, 'completed'))
+        );
+        const cnt = countRes[0]?.value || 0;
+        if (cnt >= criteria.threshold) earned = true;
       }
-      if (badge.criteria.type === 'totalWasteKg') {
-        const pickups = await Pickup.find({ centerId, status: 'completed' });
-        const totalKg = pickups.reduce((sum: number, p: any) => sum + (p.actualWeight || p.estimatedWeight || 0), 0);
-        if (totalKg >= badge.criteria.threshold) earned = true;
+      if (criteria.type === 'totalWasteKg') {
+        const result = await db.select({
+          actualWeight: pickups.actualWeight,
+          estimatedWeight: pickups.estimatedWeight
+        }).from(pickups).where(
+          and(eq(pickups.centerId, centerId), eq(pickups.status, 'completed'))
+        );
+        
+        const totalKg = result.reduce((sum, p) => sum + (p.actualWeight || p.estimatedWeight || 0), 0);
+        if (totalKg >= criteria.threshold) earned = true;
       }
-      if (badge.criteria.type === 'wasteTypeDiversity') {
-        const pickups = await Pickup.find({ centerId, status: 'completed' });
-        const types = new Set(pickups.map((p: any) => p.wasteType));
-        if (types.size >= badge.criteria.threshold) earned = true;
+      if (criteria.type === 'wasteTypeDiversity') {
+        const result = await db.select({
+          wasteType: pickups.wasteType
+        }).from(pickups).where(
+          and(eq(pickups.centerId, centerId), eq(pickups.status, 'completed'))
+        );
+        
+        const types = new Set(result.map(p => p.wasteType));
+        if (types.size >= criteria.threshold) earned = true;
       }
       
       if (earned) {
-        center.badges.push(badge.badgeName);
-        await center.save();
+        centerBadges.push(badge.badgeName);
+        await db.update(recyclingCenters).set({ badges: centerBadges }).where(eq(recyclingCenters.id, centerId));
       }
     }
   } catch (err) {

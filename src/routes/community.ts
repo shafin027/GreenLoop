@@ -13,7 +13,8 @@ import {
   deletePost,
   listPublicPosts,
   createPost,
-  likePost
+  reactToPost,
+  removeReaction
 } from '../controllers/CommunityController';
 
 const router = Router();
@@ -28,7 +29,8 @@ router.delete('/admin/events/:id', authenticateToken, authorizeRole(['admin', 's
 
 router.get('/posts', optionalAuthenticateToken, listPublicPosts);
 router.post('/posts', authenticateToken, createPost);
-router.post('/posts/like/:id', authenticateToken, likePost);
+router.post('/posts/:id/react', authenticateToken, reactToPost);
+router.delete('/posts/:id/react', authenticateToken, removeReaction);
 router.get('/admin/posts', authenticateToken, authorizeRole(['admin', 'super-admin']), listAdminPosts);
 router.put('/admin/posts/:id', authenticateToken, authorizeRole(['admin', 'super-admin']), updatePost);
 router.delete('/admin/posts/:id', authenticateToken, authorizeRole(['admin', 'super-admin']), deletePost);

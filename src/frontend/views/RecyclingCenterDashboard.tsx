@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { BarChart3, Package, Award, History, Plus, CheckCircle2, AlertCircle, TrendingUp, Scale, Leaf, ShoppingCart, Zap, Users, Truck, MapPin, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { DynamicIcon } from '../components/DynamicIcon';
 
 export function RecyclingCenterDashboard() {
   const { token } = useAuth();
@@ -102,11 +103,13 @@ export function RecyclingCenterDashboard() {
   };
 
   const fetchBusinesses = async () => {
+    if (!token) return;
     try {
-      const res = await fetch('/api/businesses/all', {
+      const res = await fetch('/api/recycling-centers/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) { const data = await res.json(); setBusinesses(Array.isArray(data) ? data : []); }
+      else { console.error('Failed to load businesses', res.status, res.statusText); }
     } catch (e) { console.error(e); }
   };
 
@@ -632,7 +635,11 @@ export function RecyclingCenterDashboard() {
                     <div key={b._id} className={`bg-zinc-900/50 border rounded-3xl p-6 flex flex-col gap-4 ${b.earned ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-white/5'}`}>
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-center gap-3">
-                          <img src={b.iconURL} alt={b.badgeName} className="w-10 h-10 object-contain" onError={(e: any) => { e.target.style.display='none'; }} />
+                          {b.iconURL && (b.iconURL.startsWith('http') || b.iconURL.startsWith('data:')) ? (
+                            <img src={b.iconURL} alt={b.badgeName} className="w-10 h-10 object-contain" onError={(e: any) => { e.target.style.display='none'; }} />
+                          ) : b.iconURL ? (
+                            <DynamicIcon name={b.iconURL} className="w-10 h-10" />
+                          ) : null}
                           <div>
                             <div className="font-bold">{b.badgeName}</div>
                             <div className="text-xs text-zinc-500">{b.description}</div>

@@ -1,93 +1,183 @@
 import { Request, Response } from 'express';
-import { Collector } from '../models/Collector';
-import { Pickup } from '../models/Pickup';
-import { EarningsHistory } from '../models/EarningsHistory';
-import { User } from '../models/User';
-import { RecyclingCenter } from '../models/RecyclingCenter';
-import { FraudLog } from '../models/FraudLog';
+import { db } from '../db';
+import { collectors, pickups, earningsHistory, users, recyclingCenters, fraudLogs } from '../schema';
+import { eq, desc, and, isNull, inArray, notInArray, gte, lt } from 'drizzle-orm';
 import { checkAndAwardCollectorBadges, checkAndAwardCenterBadges } from '../utils/badgeService';
 import { calcDeliveryCharge, haversineKm, WEEKLY_MILESTONES, checkWeekReset, ECO_POINTS_RATE, USER_CREDITS_PER_PICKUP } from '../utils/helpers';
 
 export class CollectorController {
-  static async getProfile(req: Request, res: Response) {
+  static async getProfile(req: Request, res: Response): Promise<void> {
     try {
-      const collector = await Collector.findById(req.user?.id);
-      if (!collector) return res.status(404).json({ message: 'Collector not found' });
+      const collectorRes = await db.select().from(collectors).where(eq(collectors.id, (req as any).user?.id)).limit(1);
+      const collector = collectorRes[0];
+      if (!collector) {
+        res.status(404).json({ message: 'Collector not found' });
+        return;
+      }
       res.json(collector);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
   }
 
-  static async updateLocation(req: Request, res: Response) {
+  static async updateLocation(req: Request, res: Response): Promise<void> {
     try {
       const { lat, lng } = req.body;
-      if (!lat || !lng) return res.status(400).json({ message: 'lat and lng required' });
-      await Collector.findByIdAndUpdate(req.user?.id, { currentLocation: { lat, lng, updatedAt: new Date() } });
+      if (!lat || !lng) {
+        res.status(400).json({ message: 'lat and lng required' });
+        return;
+      }
+      await db.update(collectors).set({
+        currentLocation: { lat, lng, updatedAt: new Date().toISOString() }
+      }).where(eq(collectors.id, (req as any).user?.id));
       res.json({ ok: true });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
   }
 
-  static async getAvailablePickups(req: Request, res: Response) {
+  static async getAvailablePickups(req: Request, res: Response): Promise<void> {
     try {
-      const pickups = await Pickup.find({ status: 'accepted_by_center', collectorId: null })
-        .populate('userId', 'name phone location')
-        .populate('centerId', 'centerName address location')
-        .sort({ createdAt: -1 });
-      res.json(pickups);
+      const result = await db.select({
+        pickup: pickups,
+        user: {
+          name: users.name,
+          phone: users.phone,
+          location: users.location
+        },
+        center: {
+          centerName: recyclingCenters.centerName,
+          address: recyclingCenters.address,
+          location: recyclingCenters.location
+        }
+      })
+      .from(pickups)
+      .leftJoin(users, eq(pickups.userId, users.id))
+      .leftJoin(recyclingCenters, eq(pickups.centerId, recyclingCenters.id))
+      .where(and(eq(pickups.status, 'accepted_by_center'), isNull(pickups.collectorId)))
+      .orderBy(desc(pickups.createdAt));
+
+      const mapped = result.map(row => ({
+        ...row.pickup,
+        _id: row.pickup.id,
+        userId: row.user ? { id: row.pickup.userId, _id: row.pickup.userId, ...row.user } : null,
+        centerId: row.center ? { id: row.pickup.centerId, _id: row.pickup.centerId, ...row.center } : null
+      }));
+      res.json(mapped);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
   }
 
-  static async getAssignedPickups(req: Request, res: Response) {
+  static async getAssignedPickups(req: Request, res: Response): Promise<void> {
     try {
-      const pickups = await Pickup.find({ collectorId: req.user?.id, status: { $nin: ['completed', 'failed'] } })
-        .populate('userId', 'name phone location')
-        .populate('centerId', 'centerName address location')
-        .sort({ createdAt: -1 });
-      res.json(pickups);
+      const result = await db.select({
+        pickup: pickups,
+        user: {
+          name: users.name,
+          phone: users.phone,
+          location: users.location
+        },
+        center: {
+          centerName: recyclingCenters.centerName,
+          address: recyclingCenters.address,
+          location: recyclingCenters.location
+        }
+      })
+      .from(pickups)
+      .leftJoin(users, eq(pickups.userId, users.id))
+      .leftJoin(recyclingCenters, eq(pickups.centerId, recyclingCenters.id))
+      .where(and(
+        eq(pickups.collectorId, (req as any).user?.id),
+        notInArray(pickups.status, ['completed', 'failed'])
+      ))
+      .orderBy(desc(pickups.createdAt));
+
+      const mapped = result.map(row => ({
+        ...row.pickup,
+        _id: row.pickup.id,
+        userId: row.user ? { id: row.pickup.userId, _id: row.pickup.userId, ...row.user } : null,
+        centerId: row.center ? { id: row.pickup.centerId, _id: row.pickup.centerId, ...row.center } : null
+      }));
+      res.json(mapped);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
   }
 
-  static async getHistory(req: Request, res: Response) {
+  static async getHistory(req: Request, res: Response): Promise<void> {
     try {
-      const pickups = await Pickup.find({ collectorId: req.user?.id, status: { $in: ['completed', 'failed'] } })
-        .populate('userId', 'name phone')
-        .populate('centerId', 'centerName address')
-        .sort({ completedAt: -1, createdAt: -1 });
-      res.json(pickups);
+      const result = await db.select({
+        pickup: pickups,
+        user: {
+          name: users.name,
+          phone: users.phone
+        },
+        center: {
+          centerName: recyclingCenters.centerName,
+          address: recyclingCenters.address
+        }
+      })
+      .from(pickups)
+      .leftJoin(users, eq(pickups.userId, users.id))
+      .leftJoin(recyclingCenters, eq(pickups.centerId, recyclingCenters.id))
+      .where(and(
+        eq(pickups.collectorId, (req as any).user?.id),
+        inArray(pickups.status, ['completed', 'failed'])
+      ))
+      .orderBy(desc(pickups.completedAt), desc(pickups.createdAt));
+
+      const mapped = result.map(row => ({
+        ...row.pickup,
+        _id: row.pickup.id,
+        userId: row.user ? { id: row.pickup.userId, _id: row.pickup.userId, ...row.user } : null,
+        centerId: row.center ? { id: row.pickup.centerId, _id: row.pickup.centerId, ...row.center } : null
+      }));
+      res.json(mapped);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
   }
 
-  static async assignPickup(req: Request, res: Response) {
+  static async assignPickup(req: Request, res: Response): Promise<void> {
     try {
-      const pickup = await Pickup.findOneAndUpdate(
-        { _id: req.params.id, status: 'accepted_by_center', collectorId: null },
-        { status: 'accepted_by_collector', collectorId: req.user?.id },
-        { new: true }
-      );
-      if (!pickup) return res.status(404).json({ message: 'Pickup not available' });
-      res.json(pickup);
+      const updated = await db.update(pickups).set({
+        status: 'accepted_by_collector',
+        collectorId: (req as any).user?.id
+      }).where(and(
+        eq(pickups.id, req.params.id),
+        eq(pickups.status, 'accepted_by_center'),
+        isNull(pickups.collectorId)
+      )).returning();
+
+      if (updated.length === 0) {
+        res.status(404).json({ message: 'Pickup not available' });
+        return;
+      }
+      res.json(updated[0]);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
   }
 
-  static async updatePickupStatus(req: Request, res: Response) {
+  static async updatePickupStatus(req: Request, res: Response): Promise<void> {
     try {
       const { status, actualWeight, completionPhoto } = req.body;
-      const pickup = await Pickup.findOne({ _id: req.params.id, collectorId: req.user?.id });
-      if (!pickup) return res.status(404).json({ message: 'Pickup not found' });
+      const pickupRes = await db.select().from(pickups).where(and(
+        eq(pickups.id, req.params.id),
+        eq(pickups.collectorId, (req as any).user?.id)
+      )).limit(1);
+      const pickup = pickupRes[0];
+      if (!pickup) {
+        res.status(404).json({ message: 'Pickup not found' });
+        return;
+      }
 
       if (status === 'completed') {
-        if (!completionPhoto) return res.status(400).json({ message: 'Completion photo is required to complete a pickup' });
+        if (!completionPhoto) {
+          res.status(400).json({ message: 'Completion photo is required to complete a pickup' });
+          return;
+        }
 
         const weight = actualWeight || pickup.estimatedWeight;
         const co2Reduced = weight * 0.8;
@@ -95,10 +185,12 @@ export class CollectorController {
 
         let finalCharge = pickup.deliveryCharge || 60;
         if (pickup.centerId) {
-          const center = await RecyclingCenter.findById(pickup.centerId);
-          const userDoc = await User.findById(pickup.userId);
-          const userLoc = userDoc?.location;
-          const centerLoc = center?.location;
+          const centerRes = await db.select().from(recyclingCenters).where(eq(recyclingCenters.id, pickup.centerId)).limit(1);
+          const center = centerRes[0];
+          const userRes = await db.select().from(users).where(eq(users.id, pickup.userId)).limit(1);
+          const userDoc = userRes[0];
+          const userLoc = userDoc?.location as any;
+          const centerLoc = center?.location as any;
           if (userLoc?.lat && userLoc?.lng && centerLoc?.lat && centerLoc?.lng) {
             const distKm = haversineKm(userLoc.lat, userLoc.lng, centerLoc.lat, centerLoc.lng);
             finalCharge = calcDeliveryCharge(distKm, weight);
@@ -107,57 +199,77 @@ export class CollectorController {
           }
         }
 
-        pickup.status = 'completed';
-        pickup.actualWeight = weight;
-        pickup.co2Reduced = co2Reduced;
-        pickup.ecoPointsEarned = ecoPoints;
-        pickup.completionPhoto = completionPhoto;
-        pickup.completedAt = new Date();
-        pickup.deliveryCharge = finalCharge;
-        pickup.deliveryProofImages = pickup.deliveryProofImages || [];
-        if (!pickup.deliveryProofImages.includes(completionPhoto)) {
-          pickup.deliveryProofImages.push(completionPhoto);
+        const currentProofImages = Array.isArray(pickup.deliveryProofImages) ? (pickup.deliveryProofImages as string[]) : [];
+        if (!currentProofImages.includes(completionPhoto)) {
+          currentProofImages.push(completionPhoto);
         }
-        await pickup.save();
 
-        let collector = await Collector.findById(req.user?.id);
+        const updatedPickupRes = await db.update(pickups).set({
+          status: 'completed',
+          actualWeight: weight,
+          co2Reduced,
+          ecoPointsEarned: ecoPoints,
+          completionPhoto,
+          completedAt: new Date(),
+          deliveryCharge: finalCharge,
+          deliveryProofImages: currentProofImages
+        }).where(eq(pickups.id, pickup.id)).returning();
+
+        const updatedPickup = updatedPickupRes[0];
+
+        const collectorRes = await db.select().from(collectors).where(eq(collectors.id, (req as any).user?.id)).limit(1);
+        let collector = collectorRes[0];
         if (collector) {
           collector = await checkWeekReset(collector);
-          collector.totalPickups = (collector.totalPickups || 0) + 1;
-          collector.totalWeightCollected = (collector.totalWeightCollected || 0) + weight;
+          const newWeeklyPickups = (collector.weeklyPickups || 0) + 1;
           const baseCharge = finalCharge;
-          collector.totalEarnings = (collector.totalEarnings || 0) + baseCharge;
-          collector.weeklyPickups = (collector.weeklyPickups || 0) + 1;
-          collector.weeklyEarnings = (collector.weeklyEarnings || 0) + baseCharge;
+          let newWeeklyEarnings = (collector.weeklyEarnings || 0) + baseCharge;
+          let newTotalEarnings = (collector.totalEarnings || 0) + baseCharge;
 
           let bonusEarned = 0;
           for (const milestone of WEEKLY_MILESTONES) {
-            const prevPickups = collector.weeklyPickups - 1;
-            if (prevPickups < milestone.pickups && collector.weeklyPickups >= milestone.pickups) {
+            const prevPickups = newWeeklyPickups - 1;
+            if (prevPickups < milestone.pickups && newWeeklyPickups >= milestone.pickups) {
               bonusEarned += milestone.bonus;
             }
           }
-          if (bonusEarned > 0) {
-            collector.weeklyBonusEarned = (collector.weeklyBonusEarned || 0) + bonusEarned;
-            collector.totalEarnings = (collector.totalEarnings || 0) + bonusEarned;
-          }
-          await collector.save();
 
+          let newWeeklyBonus = (collector.weeklyBonusEarned || 0);
+          if (bonusEarned > 0) {
+            newWeeklyBonus += bonusEarned;
+            newTotalEarnings += bonusEarned;
+          }
+
+          await db.update(collectors).set({
+            totalPickups: (collector.totalPickups || 0) + 1,
+            totalWeightCollected: (collector.totalWeightCollected || 0) + weight,
+            totalEarnings: newTotalEarnings,
+            weeklyPickups: newWeeklyPickups,
+            weeklyEarnings: newWeeklyEarnings,
+            weeklyBonusEarned: newWeeklyBonus,
+            weekResetDate: collector.weekResetDate
+          }).where(eq(collectors.id, (req as any).user?.id));
+
+          // Earnings History
           const today = new Date();
           const dayName = today.toLocaleDateString('en-US', { weekday: 'short' });
-          const existing = await EarningsHistory.findOne({
-            collectorId: req.user?.id,
-            day: dayName,
-            createdAt: { $gte: new Date(today.getFullYear(), today.getMonth(), today.getDate()) }
-          });
-          if (existing) {
-            existing.earnings += baseCharge + bonusEarned;
-            existing.pickups += 1;
-            existing.bonus += bonusEarned;
-            await existing.save();
+          const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+          const existingHistory = await db.select().from(earningsHistory).where(and(
+            eq(earningsHistory.collectorId, (req as any).user?.id),
+            eq(earningsHistory.day, dayName),
+            gte(earningsHistory.createdAt, start)
+          )).limit(1);
+
+          if (existingHistory.length > 0) {
+            await db.update(earningsHistory).set({
+              earnings: (existingHistory[0].earnings || 0) + baseCharge + bonusEarned,
+              pickups: (existingHistory[0].pickups || 0) + 1,
+              bonus: (existingHistory[0].bonus || 0) + bonusEarned
+            }).where(eq(earningsHistory.id, existingHistory[0].id));
           } else {
-            await EarningsHistory.create({
-              collectorId: req.user?.id,
+            await db.insert(earningsHistory).values({
+              collectorId: (req as any).user?.id,
               day: dayName,
               earnings: baseCharge + bonusEarned,
               pickups: 1,
@@ -165,29 +277,33 @@ export class CollectorController {
             });
           }
 
-          await checkAndAwardCollectorBadges(req.user?.id || '');
+          await checkAndAwardCollectorBadges((req as any).user?.id || '');
         }
 
-        const user = await User.findById(pickup.userId);
+        // User Update
+        const userRes = await db.select().from(users).where(eq(users.id, pickup.userId)).limit(1);
+        const user = userRes[0];
         if (user) {
-          user.carbonCreditsBalance = (user.carbonCreditsBalance || 0) + USER_CREDITS_PER_PICKUP;
-          user.ecoPoints = (user.ecoPoints || 0) + ecoPoints;
-          user.totalCO2Reduced = (user.totalCO2Reduced || 0) + co2Reduced;
-          await user.save();
+          await db.update(users).set({
+            carbonCreditsBalance: (user.carbonCreditsBalance || 0) + USER_CREDITS_PER_PICKUP,
+            ecoPoints: (user.ecoPoints || 0) + ecoPoints,
+            totalCO2Reduced: (user.totalCO2Reduced || 0) + co2Reduced
+          }).where(eq(users.id, pickup.userId));
         }
 
         if (pickup.centerId) {
-          await checkAndAwardCenterBadges(pickup.centerId.toString());
+          await checkAndAwardCenterBadges(pickup.centerId);
         }
 
+        // Fraud check
         const estimatedW = pickup.estimatedWeight || 0;
         const mismatchPct = estimatedW > 0 ? Math.abs(weight - estimatedW) / estimatedW : 0;
         const mismatchKg = Math.abs(weight - estimatedW);
         const isMismatch = mismatchPct > 0.10 && mismatchKg > 0.5;
         const isAnomalous = weight > 50;
         if (isMismatch || isAnomalous) {
-          const existingFraud = await FraudLog.findOne({ pickupId: pickup._id });
-          if (!existingFraud) {
+          const existingFraud = await db.select().from(fraudLogs).where(eq(fraudLogs.pickupId, pickup.id)).limit(1);
+          if (existingFraud.length === 0) {
             let reason: string;
             let severity: string;
             if (isMismatch && isAnomalous) {
@@ -200,22 +316,28 @@ export class CollectorController {
               reason = `Unusual weight entry: ${weight}kg exceeds threshold of 50kg`;
               severity = weight > 100 ? 'critical' : 'high';
             }
-            await FraudLog.create({ collectorId: req.user?.id, pickupId: pickup._id, reason, severity, resolved: false });
+            await db.insert(fraudLogs).values({
+              collectorId: (req as any).user?.id,
+              pickupId: pickup.id,
+              reason,
+              severity,
+              resolved: false
+            });
           }
         }
 
-        return res.json({ message: 'Pickup completed successfully', pickup });
+        res.json({ message: 'Pickup completed successfully', pickup: updatedPickup });
+        return;
       }
 
-      pickup.status = status;
-      await pickup.save();
-      res.json(pickup);
+      const updatedPickupRes = await db.update(pickups).set({ status }).where(eq(pickups.id, pickup.id)).returning();
+      res.json(updatedPickupRes[0]);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
   }
 
-  static async getEarningsChart(req: Request, res: Response) {
+  static async getEarningsChart(req: Request, res: Response): Promise<void> {
     try {
       const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
       const now = new Date();
@@ -229,10 +351,15 @@ export class CollectorController {
       const earningsData = await Promise.all(last7Days.map(async ({ date, day }) => {
         const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
         const end = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
-        const record = await EarningsHistory.findOne({
-          collectorId: req.user?.id,
-          createdAt: { $gte: start, $lt: end }
-        });
+
+        const recordRes = await db.select().from(earningsHistory).where(and(
+          eq(earningsHistory.collectorId, (req as any).user?.id),
+          gte(earningsHistory.createdAt, start),
+          lt(earningsHistory.createdAt, end)
+        )).limit(1);
+
+        const record = recordRes[0];
+
         return {
           day,
           earnings: record?.earnings || 0,
@@ -247,24 +374,39 @@ export class CollectorController {
     }
   }
 
-  static async getRankings(req: Request, res: Response) {
+  static async getRankings(req: Request, res: Response): Promise<void> {
     try {
-      const collectors = await Collector.find()
-        .select('name totalWeightCollected totalPickups performanceRating totalEarnings verified')
-        .sort({ totalPickups: -1 });
-      res.json(collectors);
+      const result = await db.select({
+        id: collectors.id,
+        name: collectors.name,
+        totalWeightCollected: collectors.totalWeightCollected,
+        totalPickups: collectors.totalPickups,
+        performanceRating: collectors.performanceRating,
+        totalEarnings: collectors.totalEarnings,
+        verified: collectors.verified
+      }).from(collectors).orderBy(desc(collectors.totalPickups));
+      res.json(result);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
   }
 
-  static async getAllCollectors(req: Request, res: Response) {
+  static async getAllCollectors(req: Request, res: Response): Promise<void> {
     try {
-      const collectors = await Collector.find().select('name email totalPickups totalEarnings verified badges weeklyPickups isBanned');
-      res.json(collectors);
+      const result = await db.select({
+        id: collectors.id,
+        name: collectors.name,
+        email: collectors.email,
+        totalPickups: collectors.totalPickups,
+        totalEarnings: collectors.totalEarnings,
+        verified: collectors.verified,
+        badges: collectors.badges,
+        weeklyPickups: collectors.weeklyPickups,
+        isBanned: collectors.isBanned
+      }).from(collectors);
+      res.json(result.map(c => ({ ...c, _id: c.id })));
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
   }
 }
-

@@ -7,32 +7,6 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
     <script>
       window.addEventListener('error', function(event) {
-        var filename = event.filename || '';
-        var error = event.error || {};
-        var stack = error.stack || '';
-        
-        // GreenLoop source code does not use Blob URLs or Web Workers.
-        // Ignore errors from browser extensions (chrome-extension://) and dynamic blob scripts.
-        if (filename.indexOf('blob:') === 0 || filename.indexOf('chrome-extension:') === 0) {
-          console.warn('Ignored external error:', event.message, 'at', filename);
-          return;
-        }
-        if (stack.indexOf('chrome-extension:') > -1) {
-          console.warn('Ignored extension-related error:', event.message);
-          return;
-        }
-
-        // Only show overlay for errors originating in local source files or node_modules
-        var isLocal = filename.indexOf('/src/') > -1 || 
-                      filename.indexOf('/node_modules/') > -1 || 
-                      filename.indexOf('localhost:3000') > -1 ||
-                      stack.indexOf('/src/') > -1;
-        
-        if (!isLocal) {
-          console.warn('Ignored non-local error:', event.message, 'at', filename);
-          return;
-        }
-
         var errorDiv = document.getElementById('global-error-overlay');
         if (!errorDiv) {
           errorDiv = document.createElement('div');
@@ -59,16 +33,6 @@
           '<pre style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px; border: 1px border rgba(255,255,255,0.1); overflow-x: auto;">' + (event.error ? event.error.stack : '') + '</pre>';
       });
       window.addEventListener('unhandledrejection', function(event) {
-        var reason = event.reason || {};
-        var stack = reason.stack || '';
-        var message = reason.message || reason || '';
-        
-        // Ignore extension-related or blob promise rejections
-        if (stack.indexOf('chrome-extension:') > -1 || stack.indexOf('blob:') > -1) {
-          console.warn('Ignored external promise rejection:', message);
-          return;
-        }
-
         var errorDiv = document.getElementById('global-error-overlay');
         if (!errorDiv) {
           errorDiv = document.createElement('div');
@@ -94,10 +58,11 @@
           '<pre style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px; border: 1px border rgba(255,255,255,0.1); overflow-x: auto;">' + (reason.stack || '') + '</pre>';
       });
     </script>
+    <script type="module" crossorigin src="/assets/index-Dp086E68.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-V0EUwEWU.css">
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
 

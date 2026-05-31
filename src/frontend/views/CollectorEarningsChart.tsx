@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { useAuth } from '../context/AuthContext';
 
 interface EarningsData {
   day: string;
@@ -7,16 +8,18 @@ interface EarningsData {
 }
 
 export const CollectorEarningsChart: React.FC = () => {
+  const { token } = useAuth();
   const [data, setData] = useState<EarningsData[]>([]);
 
   useEffect(() => {
+    if (!token) return;
     fetch('/api/collectors/earnings-chart', {
-      headers: { 'Authorization': `Bearer ${localStorage.getItem('gl_token')}` }
+      headers: { 'Authorization': `Bearer ${token}` }
     })
       .then(res => res.json())
       .then(setData)
       .catch(console.error);
-  }, []);
+  }, [token]);
 
   return (
     <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">

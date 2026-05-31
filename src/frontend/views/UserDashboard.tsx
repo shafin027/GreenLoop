@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Calendar, History, Award, Recycle, Trash2, Plus, ArrowUpRight, BarChart3, Leaf, Gift, ShoppingBag, Zap, Heart, MessageCircle, Share2, Filter, Search, Star, User, MapPin, CheckCircle2, AlertCircle, Navigation, Map, X } from 'lucide-react';
 import { BadgeDisplay } from './BadgeDisplay';
+import { DynamicIcon } from '../components/DynamicIcon';
 import { CommunityEvents } from './CommunityEvents';
 import { PickupMap } from './PickupMap';
 import { useAuth } from '../context/AuthContext';
@@ -53,6 +54,33 @@ export const UserDashboard: React.FC = () => {
   const [ratingReview, setRatingReview] = useState('');
   const [ratingMsg, setRatingMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [submittingRating, setSubmittingRating] = useState(false);
+
+  const weekStart = (() => {
+    const now = new Date();
+    const day = now.getDay();
+    const start = new Date(now);
+    start.setDate(now.getDate() - day);
+    start.setHours(0, 0, 0, 0);
+    return start;
+  })();
+
+  const weeklyWeightCollected = pickups.reduce((sum, pickup) => {
+    if (pickup.status !== 'completed') return sum;
+    const completedAt = new Date(pickup.completedAt || pickup.updatedAt || pickup.createdAt || Date.now());
+    return completedAt >= weekStart
+      ? sum + (pickup.actualWeight || pickup.estimatedWeight || 0)
+      : sum;
+  }, 0);
+
+  const weeklyGoalTarget = userData
+    ? Math.max(20, Math.min(80,
+        20 + Math.floor((userData.ecoPoints || 0) / 100) * 10 + Math.floor((userData.totalCO2Reduced || 0) / 50) * 5
+      ))
+    : 50;
+
+  const weeklyProgress = weeklyGoalTarget > 0
+    ? Math.min(100, Math.round((weeklyWeightCollected / weeklyGoalTarget) * 100))
+    : 0;
 
   useEffect(() => {
     fetchPickups();
@@ -144,7 +172,8 @@ export const UserDashboard: React.FC = () => {
 
   const fetchPosts = async () => {
     try {
-      const res = await fetch('/api/community/posts');
+      const options = token ? { headers: { 'Authorization': `Bearer ${token}` } } : undefined;
+      const res = await fetch('/api/community/posts', options);
       const data = await res.json();
       setPosts(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -247,12 +276,21 @@ export const UserDashboard: React.FC = () => {
     }
   };
 
-  const handleLike = async (postId: string) => {
+  const handleReaction = async (postId: string, reactionType: string) => {
+    if (!token) return;
     try {
-      await fetch(`/api/community/posts/like/${postId}`, {
+      const res = await fetch(`/api/community/posts/${postId}/react`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ reactionType })
       });
+      if (!res.ok) {
+        const data = await res.json();
+        console.error('Reaction failed:', data.message || data);
+      }
       fetchPosts();
     } catch (err) {
       console.error(err);
@@ -635,11 +673,11 @@ export const UserDashboard: React.FC = () => {
             {/* Sidebar */}
             <div className="space-y-8">
               {(userData?.badges?.length || 0) === 0 ? (
-                <div className="bg-zinc-900/50 border border-white/5 p-6 rounded-3xl">
-                  <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                    <Award className="text-amber-400" /> Your Badges
+                <div className="bg-zinc-950/40 border border-white/5 p-8 rounded-[2.5rem] shadow-[0_20px_40px_-15px_rgba(0,0,0,0.15)] backdrop-blur-xl">
+                  <h3 className="text-base font-bold tracking-tight mb-6 flex items-center gap-2 text-zinc-100">
+                    <Award className="text-emerald-400 w-5 h-5" /> Your Badges
                   </h3>
-                  <div className="text-center py-8 text-zinc-500 text-sm">No badges earned yet. Complete pickups to earn your first badge!</div>
+                  <div className="text-center py-8 text-zinc-500 text-xs leading-relaxed">No badges earned yet. Complete pickups to earn your first badge!</div>
                 </div>
               ) : (
                 <BadgeDisplay badges={badges.filter(b => userData?.badges?.includes(b.badgeName))} />
@@ -701,15 +739,34 @@ export const UserDashboard: React.FC = () => {
                       <h3 className="text-lg font-bold mb-2">{post.title}</h3>
                       <p className="text-zinc-400 text-sm leading-relaxed line-clamp-3">{post.content}</p>
                     </div>
-                    <div className="p-4 bg-black/40 border-t border-white/5 flex items-center justify-between">
-                      <button 
-                        onClick={() => handleLike(post.id)}
-                        className="flex items-center gap-2 text-sm font-bold text-zinc-400 hover:text-emerald-400 transition-colors"
-                      >
-                        <Plus className="w-4 h-4" />
-                        {post.likes} Likes
-                      </button>
-                      <button className="text-xs font-bold text-emerald-500 uppercase tracking-widest">Read More</button>
+                    <div className="p-4 bg-black/40 border-t border-white/5 flex items-center justify-between overflow-x-auto custom-scrollbar">
+                      <div className="flex items-center gap-1.5 sm:gap-2">
+                        {[
+                          { type: 'like', emoji: '👍' },
+                          { type: 'love', emoji: '❤️' },
+                          { type: 'celebrate', emoji: '🎉' },
+                          { type: 'eco', emoji: '🌱' },
+                          { type: 'wow', emoji: '😮' }
+                        ].map(reaction => {
+                          const count = post.reactions?.[reaction.type] || 0;
+                          const isActive = post.userReaction === reaction.type;
+                          return (
+                            <button
+                              key={reaction.type}
+                              onClick={() => handleReaction(post.id || post._id, reaction.type)}
+                              disabled={!token}
+                              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-sm transition-all ${
+                                isActive ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-zinc-800/50 text-zinc-400 border border-white/5 hover:bg-zinc-700/50'
+                              } ${!token ? 'opacity-50 cursor-not-allowed' : 'active:scale-95'}`}
+                              title={reaction.type}
+                            >
+                              <span>{reaction.emoji}</span>
+                              {count > 0 && <span className="font-bold text-xs">{count}</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <button className="text-xs font-bold text-emerald-500 uppercase tracking-widest hidden sm:block">Read More</button>
                     </div>
                   </div>
                 ))}
@@ -813,13 +870,17 @@ export const UserDashboard: React.FC = () => {
 
               <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-3xl p-8">
                 <h3 className="text-xl font-bold mb-4 text-emerald-500">Weekly Goal</h3>
-                <p className="text-sm text-emerald-500/80 mb-6">Collect 50kg of plastic this week to earn a "Plastic Warrior" badge!</p>
+                <p className="text-sm text-emerald-500/80 mb-6">
+                  {userData
+                    ? `Collect ${weeklyGoalTarget.toFixed(0)}kg of recycled waste this week to level up your progress.`
+                    : 'Collect recycled waste this week to level up your progress.'}
+                </p>
                 <div className="w-full bg-emerald-500/20 h-2 rounded-full mb-4">
-                  <div className="bg-emerald-500 h-full rounded-full" style={{ width: '65%' }} />
+                  <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${weeklyProgress}%` }} />
                 </div>
                 <div className="flex justify-between text-xs font-bold text-emerald-500">
-                  <span>32.5kg collected</span>
-                  <span>65%</span>
+                  <span>{weeklyWeightCollected.toFixed(1)}kg collected</span>
+                  <span>{weeklyProgress}%</span>
                 </div>
               </div>
             </div>
@@ -863,21 +924,25 @@ export const UserDashboard: React.FC = () => {
                   const wasteTypes = Object.entries(b.wasteBreakdown || {});
                   const criteriaType = b.criteria?.type || '';
                   const palette = criteriaType === 'pickupsCompleted'
-                    ? { border: 'border-emerald-500/40', bg: 'bg-emerald-950/60', icon: 'bg-emerald-500/20', bar: 'bg-emerald-400', tag: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30', label: 'text-emerald-300' }
+                    ? { border: 'border-white/5 hover:border-emerald-500/20', bg: 'bg-zinc-900/30 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]', icon: 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20', bar: 'bg-emerald-400', tag: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', label: 'text-zinc-100 group-hover:text-emerald-400' }
                     : criteriaType === 'co2Reduced'
-                    ? { border: 'border-sky-500/40', bg: 'bg-sky-950/60', icon: 'bg-sky-500/20', bar: 'bg-sky-400', tag: 'bg-sky-500/20 text-sky-300 border-sky-500/30', label: 'text-sky-300' }
+                    ? { border: 'border-white/5 hover:border-sky-500/20', bg: 'bg-zinc-900/30 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]', icon: 'bg-sky-500/10 text-sky-400 ring-1 ring-sky-500/20', bar: 'bg-sky-400', tag: 'bg-sky-500/10 text-sky-400 border-sky-500/20', label: 'text-zinc-100 group-hover:text-sky-400' }
                     : criteriaType === 'ecoPoints'
-                    ? { border: 'border-amber-500/40', bg: 'bg-amber-950/60', icon: 'bg-amber-500/20', bar: 'bg-amber-400', tag: 'bg-amber-500/20 text-amber-300 border-amber-500/30', label: 'text-amber-300' }
-                    : { border: 'border-purple-500/40', bg: 'bg-purple-950/60', icon: 'bg-purple-500/20', bar: 'bg-purple-400', tag: 'bg-purple-500/20 text-purple-300 border-purple-500/30', label: 'text-purple-300' };
+                    ? { border: 'border-white/5 hover:border-amber-500/20', bg: 'bg-zinc-900/30 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]', icon: 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/20', bar: 'bg-amber-400', tag: 'bg-amber-500/10 text-amber-400 border-amber-500/20', label: 'text-zinc-100 group-hover:text-amber-400' }
+                    : { border: 'border-white/5 hover:border-purple-500/20', bg: 'bg-zinc-900/30 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]', icon: 'bg-purple-500/10 text-purple-400 ring-1 ring-purple-500/20', bar: 'bg-purple-400', tag: 'bg-purple-500/10 text-purple-400 border-purple-500/20', label: 'text-zinc-100 group-hover:text-purple-400' };
 
-                  const earnedPalette = { border: 'border-emerald-400/60', bg: 'bg-emerald-950/80', icon: 'bg-emerald-400/20', bar: 'bg-emerald-400', tag: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30', label: 'text-emerald-300' };
+                  const earnedPalette = { border: 'border-emerald-500/30 hover:border-emerald-500/40', bg: 'bg-emerald-950/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]', icon: 'bg-emerald-400/15 text-emerald-300 ring-1 ring-emerald-400/30', bar: 'bg-emerald-400', tag: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20', label: 'text-zinc-100 group-hover:text-emerald-400' };
                   const colors = b.earned ? earnedPalette : palette;
                   return (
-                    <div key={b._id} className={`${colors.bg} border ${colors.border} rounded-3xl p-6 flex flex-col gap-4 transition-all hover:brightness-110`}>
+                    <div key={b._id} className={`${colors.bg} border ${colors.border} rounded-3xl p-6 flex flex-col gap-4 transition-all hover:brightness-110 group`}>
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-center gap-3">
                           <div className={`w-12 h-12 rounded-2xl ${colors.icon} flex items-center justify-center flex-shrink-0`}>
-                            <img src={b.iconURL} alt={b.badgeName} className="w-7 h-7 object-contain" onError={(e: any) => { e.target.style.display='none'; }} />
+                            {b.iconURL && (b.iconURL.startsWith('http') || b.iconURL.startsWith('data:')) ? (
+                              <img src={b.iconURL} alt={b.badgeName} className="w-7 h-7 object-contain" onError={(e: any) => { e.target.style.display='none'; }} />
+                            ) : b.iconURL ? (
+                              <DynamicIcon name={b.iconURL} className="w-7 h-7" />
+                            ) : null}
                           </div>
                           <div>
                             <div className={`font-bold text-sm ${colors.label}`}>{b.badgeName}</div>

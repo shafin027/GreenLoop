@@ -1,46 +1,47 @@
 import { Request, Response } from 'express';
-import { Pickup } from '../models/Pickup';
-import { User } from '../models/User';
+import { db } from '../db';
+import { pickups, users, recyclingCenters, collectors } from '../schema';
+import { eq, and } from 'drizzle-orm';
 import { calcDeliveryCharge, haversineKm } from '../utils/calculations';
-import { checkAndAwardUserBadges, checkAndAwardCollectorBadges, checkAndAwardCenterBadges } from '../utils/badgeService';
-import { logFraudIfNeeded } from '../utils/fraudService';
-import { Collector } from '../models/Collector';
-import { RecyclingCenter } from '../models/RecyclingCenter';
 
 export class PickupController {
-  static async schedulePickup(req: Request, res: Response) {
+  static async schedulePickup(req: Request, res: Response): Promise<void> {
     try {
       const { location, ...pickupData } = req.body;
       const userId = (req as any).user.id;
       
       if (location?.lat && location?.lng) {
-        await User.findByIdAndUpdate(userId, { location });
+        await db.update(users).set({ location }).where(eq(users.id, userId));
       }
       
-      const pickup = await Pickup.create({
+      const pickup = await db.insert(pickups).values({
         ...pickupData,
         userId,
         status: 'pending'
-      });
+      }).returning();
       
-      res.status(201).json(pickup);
+      res.status(201).json({ ...pickup[0], _id: pickup[0].id });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
   }
 
-  static async estimateCharge(req: Request, res: Response) {
+  static async estimateCharge(req: Request, res: Response): Promise<void> {
     try {
       const { lat, lng, weightKg = 5 } = req.body;
-      if (!lat || !lng) return res.status(400).json({ message: "Location required" });
+      if (!lat || !lng) {
+        res.status(400).json({ message: "Location required" });
+        return;
+      }
       
-      const centers = await RecyclingCenter.find();
+      const centers = await db.select().from(recyclingCenters);
       let nearest: any = null;
       let minDist = Infinity;
       
       for (const c of centers) {
-        if (!c.location?.lat || !c.location?.lng) continue;
-        const dist = haversineKm(lat, lng, c.location.lat, c.location.lng);
+        const cLoc = c.location as any;
+        if (!cLoc?.lat || !cLoc?.lng) continue;
+        const dist = haversineKm(lat, lng, cLoc.lat, cLoc.lng);
         if (dist < minDist) { 
           minDist = dist; 
           nearest = c; 
@@ -49,7 +50,8 @@ export class PickupController {
       
       if (!nearest || minDist === Infinity) {
         const fallback = calcDeliveryCharge(0, weightKg);
-        return res.json({ charge: fallback, distanceKm: 0, nearestCenter: null });
+        res.json({ charge: fallback, distanceKm: 0, nearestCenter: null });
+        return;
       }
       
       const charge = calcDeliveryCharge(minDist, weightKg);
@@ -63,60 +65,86 @@ export class PickupController {
     }
   }
 
-  static async ratePickup(req: Request, res: Response) {
+  static async ratePickup(req: Request, res: Response): Promise<void> {
     try {
       const { stars, review } = req.body;
       if (!stars || stars < 1 || stars > 5) {
-        return res.status(400).json({ message: "Stars must be 1–5" });
+        res.status(400).json({ message: "Stars must be 1–5" });
+        return;
       }
       
-      const pickup = await Pickup.findOne({ 
-        _id: req.params.id, 
-        userId: (req as any).user.id, 
-        status: 'completed' 
-      });
+      const pickupRes = await db.select().from(pickups).where(and(
+        eq(pickups.id, req.params.id),
+        eq(pickups.userId, (req as any).user.id),
+        eq(pickups.status, 'completed')
+      )).limit(1);
       
-      if (!pickup) return res.status(404).json({ message: "Completed pickup not found" });
-      if (pickup.rating?.stars) return res.status(400).json({ message: "Already rated" });
+      const pickup = pickupRes[0];
+      if (!pickup) {
+        res.status(404).json({ message: "Completed pickup not found" });
+        return;
+      }
+      const ratingObj = pickup.rating as any;
+      if (ratingObj?.stars) {
+        res.status(400).json({ message: "Already rated" });
+        return;
+      }
       
-      pickup.rating = { stars, review: review || '', ratedAt: new Date() };
-      await pickup.save();
+      const newRating = { stars, review: review || '', ratedAt: new Date().toISOString() };
+      const updatedPickupRes = await db.update(pickups).set({
+        rating: newRating
+      }).where(eq(pickups.id, req.params.id)).returning();
       
-      // Update collector rating
       if (pickup.collectorId) {
-        const collector = await Collector.findById(pickup.collectorId);
+        const collectorRes = await db.select().from(collectors).where(eq(collectors.id, pickup.collectorId)).limit(1);
+        const collector = collectorRes[0];
         if (collector) {
-          collector.ratingSum = (collector.ratingSum || 0) + stars;
-          collector.totalRatings = (collector.totalRatings || 0) + 1;
-          collector.performanceRating = Math.round((collector.ratingSum / collector.totalRatings) * 10) / 10;
-          await collector.save();
+          const newRatingSum = (collector.ratingSum || 0) + stars;
+          const newTotalRatings = (collector.totalRatings || 0) + 1;
+          const newPerformanceRating = Math.round((newRatingSum / newTotalRatings) * 10) / 10;
+          await db.update(collectors).set({
+            ratingSum: newRatingSum,
+            totalRatings: newTotalRatings,
+            performanceRating: newPerformanceRating
+          }).where(eq(collectors.id, pickup.collectorId));
         }
       }
       
-      res.json({ message: "Rating submitted successfully", pickup });
+      res.json({ message: "Rating submitted successfully", pickup: { ...updatedPickupRes[0], _id: updatedPickupRes[0].id } });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
   }
 
-  static async uploadProof(req: Request, res: Response) {
+  static async uploadProof(req: Request, res: Response): Promise<void> {
     try {
       const { imageUrl } = req.body;
-      if (!imageUrl) return res.status(400).json({ message: 'imageUrl is required' });
-      
-      const pickup = await Pickup.findById(req.params.pickupId);
-      if (!pickup) return res.status(404).json({ message: 'Pickup not found' });
-      if (pickup.collectorId?.toString() !== (req as any).user.id) {
-        return res.status(403).json({ message: 'You can only upload proof for your own deliveries' });
+      if (!imageUrl) {
+        res.status(400).json({ message: 'imageUrl is required' });
+        return;
       }
       
-      if (!pickup.deliveryProofImages) pickup.deliveryProofImages = [];
-      if (!pickup.deliveryProofImages.includes(imageUrl)) {
-        pickup.deliveryProofImages.push(imageUrl);
+      const pickupRes = await db.select().from(pickups).where(eq(pickups.id, req.params.pickupId)).limit(1);
+      const pickup = pickupRes[0];
+      if (!pickup) {
+        res.status(404).json({ message: 'Pickup not found' });
+        return;
       }
-      await pickup.save();
+      if (pickup.collectorId !== (req as any).user.id) {
+        res.status(403).json({ message: 'You can only upload proof for your own deliveries' });
+        return;
+      }
       
-      res.json({ message: 'Delivery proof uploaded successfully', images: pickup.deliveryProofImages });
+      const proofImages = Array.isArray(pickup.deliveryProofImages) ? (pickup.deliveryProofImages as string[]) : [];
+      if (!proofImages.includes(imageUrl)) {
+        proofImages.push(imageUrl);
+      }
+      
+      const updated = await db.update(pickups).set({
+        deliveryProofImages: proofImages
+      }).where(eq(pickups.id, req.params.pickupId)).returning();
+      
+      res.json({ message: 'Delivery proof uploaded successfully', images: updated[0].deliveryProofImages });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
