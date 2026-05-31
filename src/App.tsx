@@ -38,7 +38,7 @@ export default function App() {
         <div className="fixed top-20 left-0 right-0 z-[60] bg-red-500/10 backdrop-blur-md border-b border-red-500/20 py-2 px-4">
           <div className="max-w-7xl mx-auto flex items-center justify-center gap-2 text-xs font-medium text-red-400">
             <ShieldCheck className="w-3 h-3" />
-            Database not connected. Please set up your <code>MONGODB_URI</code> in AI Studio Secrets.
+            Database not connected. Please set up your <code>DATABASE_URL</code> in Vercel Environment Variables.
           </div>
         </div>
       )}
