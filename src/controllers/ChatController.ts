@@ -9,15 +9,7 @@ type ChatRequest = Request & {
   };
 };
 
-const apiKey = process.env.GROQ_API_KEY;
 
-if (!apiKey) {
-  console.warn('Warning: GROQ_API_KEY is not set in environment variables. Chatbot queries will fail.');
-}
-
-const groq = new Groq({
-  apiKey: apiKey || 'dummy_key',
-});
 
 export const chatHandler = async (req: ChatRequest, res: Response): Promise<void> => {
   try {
@@ -27,12 +19,21 @@ export const chatHandler = async (req: ChatRequest, res: Response): Promise<void
       return;
     }
 
-    if (!process.env.GROQ_API_KEY) {
+    let apiKey = process.env.GROQ_API_KEY;
+
+    if (!apiKey) {
       res.status(503).json({
         message: 'Chat service unavailable: Groq API key is not configured.'
       });
       return;
     }
+
+    // Strip literal quotes if Vercel imported them incorrectly
+    if (apiKey.startsWith('"') && apiKey.endsWith('"')) {
+      apiKey = apiKey.slice(1, -1);
+    }
+    
+    const groq = new Groq({ apiKey });
 
     const userSummary = req.user ? JSON.stringify(req.user) : 'guest';
 
